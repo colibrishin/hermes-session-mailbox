@@ -113,6 +113,30 @@ A rejected call, such as an ACK from the wrong recipient, returns a tool result 
 - **Disabled in `hermes tools`.** If you turn off the `session-mailbox` toolset in `hermes tools`, the tools stay off until you turn it back on.
 - **Do not use Hermes `state.db` as the mailbox.** The plugin rejects it.
 
+## CI
+
+GitHub Actions (`.github/workflows/ci.yml`) installs real upstream [Hermes Agent](https://github.com/NousResearch/hermes-agent) and checks this plugin's interface with it. Each job makes a plain Python 3.14 venv and runs `pip install -e` on an upstream checkout. Then it runs `tests/`.
+
+| Test file | What it checks |
+|---|---|
+| `test_a_install.py` | `hermes plugins install file://<checkout> --enable` works in a fresh default home and in a named profile. It asks no question, enables the plugin, and finds no Python dependency declaration. |
+| `test_b_native_load.py` | The native plugin manager loads the five tools with their schemas. The toolset resolves for the `cli` platform. The three hooks fire at their native call sites. The skill opens through `skill_view`. Unload removes everything, including the wake monitor. |
+| `test_c_cross_profile.py` | Send, inbox, ack, and status work across profiles through the tool registry. A retry is deduplicated, key reuse with a different payload fails, and an ACK from the wrong recipient is rejected. |
+| `test_d_wake_receiver.py` | The wake receiver uses the real `prompt.submit` of `tui_gateway.server`. Only the model run is stubbed. It checks the stored recipient turn, waiting while busy or waiting for approval, no retry after an unknown result, and clean start and stop. |
+
+The jobs:
+
+- **pinned** runs Hermes `v0.22.2` (commit `d923a5e`), the version this plugin was developed against. It runs on Ubuntu and Windows for every push and pull request, and it must pass.
+- **latest** runs the upstream `main` branch on Ubuntu, for every push and once a week. It may fail without blocking. A failure there is an early warning that upstream changed an interface this plugin uses.
+
+The tests use only temporary directories. They also redirect `HOME`, `USERPROFILE`, and `LOCALAPPDATA`, because Hermes writes launchers and runtimes under the user's default data directory. They never touch your real Hermes data. The install test copies the last commit of this checkout, so commit your plugin changes before you run it.
+
+To run the tests locally, use a separate venv where Hermes is installed from a source checkout (`pip install -e <hermes-agent checkout>`):
+
+```text
+<hermes-venv-python> tests/run.py
+```
+
 ## License
 
 MIT. See [LICENSE](LICENSE).

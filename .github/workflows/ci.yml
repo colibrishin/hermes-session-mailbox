@@ -1,0 +1,60 @@
+name: CI
+
+# Interface tests against real upstream Hermes Agent (https://github.com/NousResearch/hermes-agent).
+# pinned: the known-good upstream release; must pass on push and pull_request.
+# latest: upstream default-branch HEAD; shows upstream drift early but never blocks.
+
+on:
+  push:
+    paths-ignore: ['README.md', 'LICENSE']
+  pull_request:
+    paths-ignore: ['README.md', 'LICENSE']
+  schedule:
+    - cron: '23 4 * * 1'  # weekly, Monday 04:23 UTC: latest only
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # v0.22.2 (release date 2026.9.24), the Hermes core this plugin was developed against.
+  HERMES_PINNED_REF: d923a5eb487a17c0a68801bba9ef0f56c81040a8
+  PIP_DISABLE_PIP_VERSION_CHECK: '1'
+
+jobs:
+  pinned:
+    name: pinned Hermes v0.22.2 (${{ matrix.os }})
+    if: github.event_name != 'schedule'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: plugin
+          persist-credentials: false
+      - uses: ./plugin/.github/actions/hermes-interface
+        with:
+          hermes-ref: ${{ env.HERMES_PINNED_REF }}
+
+  latest:
+    name: latest Hermes main (ubuntu-latest, non-blocking)
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: plugin
+          persist-credentials: false
+      - uses: ./plugin/.github/actions/hermes-interface
+        with:
+          hermes-ref: main

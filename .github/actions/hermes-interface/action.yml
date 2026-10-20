@@ -1,0 +1,47 @@
+name: Hermes interface
+description: Install upstream Hermes Agent at a ref into a plain venv and run the plugin interface tests.
+inputs:
+  hermes-ref:
+    description: Upstream NousResearch/hermes-agent commit, tag or branch.
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Check out upstream Hermes Agent
+      uses: actions/checkout@v7
+      with:
+        repository: NousResearch/hermes-agent
+        ref: ${{ inputs.hermes-ref }}
+        path: _hermes
+        fetch-depth: 1
+        persist-credentials: false
+        # Upstream's own test and eval trees (~6k files) are not needed to run Hermes.
+        sparse-checkout-cone-mode: false
+        sparse-checkout: |
+          /*
+          !/tests/
+          !/evals/
+
+    - name: Set up Python 3.14
+      # Upstream declares its runtime dependencies for python_version >= '3.14' only.
+      uses: actions/setup-python@v7
+      with:
+        python-version: '3.14'
+        cache: pip
+        cache-dependency-path: _hermes/pyproject.toml
+
+    - name: Install Hermes (editable; upstream blocks wheel builds outside Nix)
+      shell: bash
+      run: |
+        set -euo pipefail
+        python -m venv "$RUNNER_TEMP/hermes-venv"
+        if [ "$RUNNER_OS" = "Windows" ]; then py="$RUNNER_TEMP/hermes-venv/Scripts/python.exe"; else py="$RUNNER_TEMP/hermes-venv/bin/python"; fi
+        "$py" -m pip install --disable-pip-version-check -q -e ./_hermes
+        echo "HERMES_TEST_PYTHON=$py" >> "$GITHUB_ENV"
+        sha=$(git -C _hermes rev-parse HEAD)
+        version=$("$py" -c "import hermes_cli; print(hermes_cli.__release_date__)")
+        echo "Hermes Agent ${{ inputs.hermes-ref }} -> \`$sha\` (release date $version)" >> "$GITHUB_STEP_SUMMARY"
+
+    - name: Run interface tests
+      shell: bash
+      run: '"$HERMES_TEST_PYTHON" plugin/tests/run.py'
