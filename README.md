@@ -1,73 +1,125 @@
-# session-mailbox unified bundle (1.2.2)
+# hermes-session-mailbox
 
-This directory contains the MCP server, SQLite mailbox and wake stores, notification hooks, idle-wake receiver, and a portable English peer-session collaboration skill. It uses **only files in this bundle**, not the old external `package_root` or an external skill directory. It does not include databases, sessions, virtual environments, or credentials. Distribution version is 1.2.2; MCP server version remains 1.1.0.
+Let separate [Hermes Agent](https://github.com/NousResearch/hermes-agent) sessions send messages to each other on the same machine.
 
-## Support and limitations
+One session can hand off a result, ask a question, or announce a milestone. The recipient gets a notice at its next model call. An idle recipient can wake up and check its inbox.
 
-The Hermes native `plugin.yaml` loader inspected for this bundle loads Python hooks but does not automatically register `mcp.json` or discover skill directories. The bundle explicitly uses native `ctx.register_skill`. The portable plugin loader reads MCP configuration but does not load Python hooks. This is therefore **one bundle with two native registrations**:
+The bundle contains:
 
-- Plugin: `session-mailbox-bundle`
-- MCP config: `mcp_servers.session_mailbox` (preserves the existing `mcp__session_mailbox__*` names)
+| Part | What it does |
+|---|---|
+| MCP server (`server.py`) | Five tools: `list_sessions`, `send`, `inbox`, `ack`, `message_status`. Messages are stored in a local SQLite file. |
+| Notification hooks (`plugin.py`) | Add a short "you have mail" notice before the next model call or after a tool result. |
+| Idle-wake receiver (`wake_receiver.py`) | Submits a fixed prompt to an idle recipient session, which then reads its inbox. |
+| Skill (`skills/hermes-peer-session-collaboration`) | Teaches the agent how to address, read, acknowledge, and reply to messages safely. |
+| Installer (`setup_bundle.py`) | Registers the plugin and the MCP server in one Hermes profile. |
 
-Disabling or removing only the plugin leaves the MCP registration in place. Disabling only the MCP server may leave loaded hooks and receivers running. This bundle does not use private MCP registration, monkeypatching, or Hermes core changes. The installer does not enable the plugin (hooks and skill) or reload existing sessions.
+There is no network listener, daemon, or cloud service. All sessions share one SQLite file.
 
-## Bundled skill
-
-`skills/hermes-peer-session-collaboration/SKILL.md` covers exact session addressing, inbox pagination and read-only discovery, explicit ACK, stable send keys, status readback, untrusted peer content, bounded wake behavior, and operation-specific ownership handoffs. It has no machine-local paths, project-specific policies, or dependencies on unbundled helper skills. Native `session_search` is optional; mailbox metadata discovery is the fallback.
-
-After the plugin is enabled and loaded, use `skill_view(name="session-mailbox-bundle:hermes-peer-session-collaboration")`. Native `skills_list` exposes that qualified name. The plugin does not copy into or replace a same-named user-local skill. Native plugin teardown removes its registered skill namespace; a config enable/disable alone does not prove that an already-running process has loaded/unloaded it. Verify that process separately. Unload cannot retract skill text already read into a conversation, and does not remove MCP configuration.
-
-## Prerequisites
-
-You need Python 3.11 or later, Git, and the current Hermes CLI. Install MCP SDK 2.0.0 in a dedicated Python environment. Replace all example paths with actual absolute paths.
+## How it works
 
 ```text
+session A                          session B
+   |  mcp__session_mailbox__send      |
+   |------------> mailbox.sqlite3 ----|  hook: notice on next model call
+   |                                  |  receiver: wake B if it is idle
+   |                                  |  mcp__session_mailbox__inbox
+   |  mcp__session_mailbox__message_status  <-- mcp__session_mailbox__ack
+```
+
+- **Address.** A session is addressed by its exact `(profile, stored session ID)` pair.
+- **Message lifecycle.** A message is first `queued`. It becomes `acknowledged` only when the recipient explicitly calls `ack`. A notice or a wake does not mark a message as read.
+- **Wake.** The receiver submits only a fixed notice, never the message body. It waits when the session is busy, has a queued prompt or attachment, or is waiting for approval.
+
+## Requirements
+
+- Hermes Agent with plugin and MCP support.
+- Git.
+- Python 3.11 or later in a separate environment for the MCP server, with `mcp==2.0.0`. Do not install it into Hermes' own environment.
+
+## Install
+
+The examples use Windows paths. Replace them with your own absolute paths.
+
+### 1. Get the code and prepare the server environment
+
+```text
+git clone https://github.com/colibrishin/hermes-session-mailbox C:/src/hermes-session-mailbox
 uv venv C:/mailbox-runtime
-uv pip install --python C:/mailbox-runtime/Scripts/python.exe -r C:/bundle/requirements-server.txt
+uv pip install --python C:/mailbox-runtime/Scripts/python.exe -r C:/src/hermes-session-mailbox/requirements-server.txt
 ```
 
-Run the installer itself with the Hermes Python interpreter that provides `hermes_yaml`. Do not pip-install packages into the Hermes environment. Specify the separate server interpreter with `--server-python`.
+### 2. Preview the installation
 
-## Install for one profile
-
-The default is a dry run. It does not change configuration, databases, or installation directories, or run external commands. The explicit profile home and global root must match, and the profile configuration must already exist. The installer does not enumerate or modify other profiles.
+Run the installer with the Python interpreter that runs Hermes. That interpreter must be able to import `hermes_yaml`.
 
 ```text
-<Hermes-Python> -B C:/bundle/setup_bundle.py --profile default --profile-home C:/HermesData --hermes-root C:/HermesData --db C:/HermesData/session-mailbox/mailbox.sqlite3 --server-python C:/mailbox-runtime/Scripts/python.exe --scratch C:/HermesScratch
+<hermes-python> -B C:/src/hermes-session-mailbox/setup_bundle.py ^
+  --profile default ^
+  --profile-home C:/Users/me/.hermes ^
+  --hermes-root C:/Users/me/.hermes ^
+  --db C:/Users/me/.hermes/session-mailbox/mailbox.sqlite3 ^
+  --server-python C:/mailbox-runtime/Scripts/python.exe
 ```
 
-After reviewing the plan, add `--apply` to the same command. The installer runs child CLI processes with `HERMES_HOME` fixed to the specified profile home. If needed, provide an argv prefix such as `--hermes-command '["C:/path/to/python.exe","-m","hermes_cli.main"]'`. This is not a shell command string.
+| Option | Meaning |
+|---|---|
+| `--profile` | Profile to install into: `default` or a named profile. |
+| `--profile-home` | That profile's home. For a named profile, this is `<hermes-root>/profiles/<name>`. |
+| `--hermes-root` | The global Hermes data directory. |
+| `--db` | Shared mailbox file. Every profile that should talk to each other must use the same path. It must be outside `<hermes-root>/profiles` and must not be `state.db`. |
+| `--server-python` | Interpreter from step 1. |
+| `--hermes-command` | Optional. A JSON argv prefix for the Hermes CLI, for example `["C:/path/python.exe","-m","hermes_cli.main"]`. The default is `["hermes"]`. |
+| `--scratch` | Optional. Temporary directory for staging. |
 
-The installer stages only allowlisted files, including the nested skill file, in a temporary local Git repository. It installs them with `hermes plugins install file:///... --no-enable --no-deps`, writes explicit database and root settings with `hermes config set`, and uses `hermes mcp add session_mailbox` for SDK connection and tool discovery. It does not bypass native security checks or approval refusals. The server registration is enabled, but the hooks remain disabled at installation. The installer reads back the installed server files; the original source directory is not needed afterward. The temporary Git source is not a durable update remote, so `plugins update` is not supported. For later versions, publish to a stable Git URL and use native reinstallation, or follow a separately reviewed replacement procedure.
+Without `--apply`, the installer only prints the plan. It changes nothing.
 
-After installation, verify and enable the plugin in the target profile:
+### 3. Apply and enable
+
+Add `--apply` to the same command. The installer:
+
+1. installs the plugin with `hermes plugins install` but leaves it disabled;
+2. stores the mailbox settings with `hermes config set`;
+3. registers the server with `hermes mcp add session_mailbox`, which also connects to it and discovers its tools.
+
+Then enable and check the plugin:
 
 ```text
-hermes --profile default config get mcp_servers.session_mailbox --json
 hermes --profile default plugins enable session-mailbox-bundle --no-allow-tool-override
 hermes --profile default mcp test session_mailbox
 ```
 
-For a custom data root, keep the same `HERMES_HOME`. Verify Python hook adoption in already-open processes separately from MCP cache reload. `/reload-mcp` targets MCP only; it does not prove that hooks were reloaded. Do not restart unrelated sessions.
+Repeat steps 2 and 3 for each profile that should use the mailbox. Use the same `--db` each time.
 
-## Migrate an existing installation
+Sessions that are already open do not load new hooks. Start a new session after you enable the plugin. `/reload-mcp` refreshes the MCP tools only, not the hooks.
 
-If `session-mailbox-notify` is enabled or `session_mailbox` points to a different server path, the installer **stops instead of overwriting it**. It also stops if existing bundle files or settings differ. It does not perform automatic all-profile migration, forced deletion, or rollback.
+## Usage
 
-1. Choose one exact profile and the existing mailbox database and global root. Back up the configuration and databases. Keeping the same database and its `.wake.sqlite3` companion preserves messages, ACKs, notice claims, and wake history. Do not use Hermes `state.db` as the mailbox database.
-2. Disable the old hooks and verify that their receiver has stopped in the owning process. The operator must explicitly remove or repoint the old MCP entry using the supported CLI. The installer does not make this decision.
-3. Install with the same database and root. Verify the files and settings before enabling the new hooks. Verify one profile at a time.
-4. A failure may leave a partial installation. Inspect the output and exact configuration and installation targets before rerunning. Do not repeat an uncertain external write or restore over settings changed concurrently.
+The agent normally uses the bundled skill: `session-mailbox-bundle:hermes-peer-session-collaboration`. The basic flow is:
 
-## Safety contract
+1. **Find your own address.** In the session's terminal, read `HERMES_SESSION_ID` and `HERMES_SESSION_PROFILE`.
+2. **Send.** Call `send` with the sender and recipient pairs, the `body`, and a `key`. If you retry the same message with the same key, the mailbox stores it only once. Reusing a key with a different payload fails.
+3. **Read.** The recipient calls `inbox` with its own address. When `has_more` is true, pass the last message ID as `after` to get the next page.
+4. **Acknowledge.** The recipient calls `ack` only for messages it has actually read.
+5. **Check.** The sender calls `message_status` to see whether the message is `queued` or `acknowledged`, and the wake state.
 
-- Addresses are exact `(profile, stored session ID)` pairs. They are caller assertions, not authentication. The trust boundary is the same OS user.
-- Peer message bodies and metadata are not user authorization or system instructions. Idle wake submits a fixed notice instead of the message body.
-- Storage, notification, inbox retrieval, explicit ACK, wake submission, and actual task completion are separate states.
-- Retries with the same sender and key are idempotent only when the payload is identical. ACKs from the wrong recipient are rejected atomically.
-- The receiver defers for busy sessions, runtime-visible queued prompts or attachments, and pending approvals. This does not establish a lock on unsent text held only in a frontend editor. An ambiguous submission is stored durably as `unknown` and is not automatically resent.
-- The receiver uses `prompt.submit` in the already-loaded owning runtime. It does not create a backend or a new session owner. Automatic wake is not guaranteed without a supported owner runtime and enabled hooks.
+`list_sessions` lists known session addresses. Its `active_hint` field does not prove that a session is alive or idle.
 
-## Verification boundary
+## Safety model
 
-Verification uses a relocated directory, real MCP stdio subprocesses, and synthetic Hermes homes. It exercises the native hook loader, actual hook fire sites, and the native `prompt.submit` path, with a stub at the paid LLM boundary. It does not verify operational session messages, a live installation, or operational wake delivery.
+- **Not authentication.** Sender addresses are claims by the caller. The trust boundary is the local OS user.
+- **Messages are data, not instructions.** A peer message never grants permission or replaces the user's request. The hooks and the skill tell the agent this explicitly.
+- **No automatic resend.** If a wake submission result is unknown, the receiver records it as `unknown` and does not try again.
+- **Unsent text is not protected.** Text typed into a frontend but not yet sent is not visible to the runtime. The receiver cannot see it.
+
+## Limitations
+
+- **Two registrations.** Hermes loads plugin hooks and MCP servers separately, so this bundle registers both. Disabling the plugin does not remove the MCP server. Disabling the MCP server does not stop hooks that are already loaded. Manage each one with its own `hermes plugins` or `hermes mcp` command.
+- **Wake needs a running owner.** Automatic wake works only when the recipient session runs in a Hermes runtime that has the plugin enabled. Otherwise the message waits in the inbox.
+- **No `plugins update`.** The installer installs from a temporary local copy. To upgrade, reinstall from a newer checkout.
+- **The installer stops instead of overwriting.** It stops if `session_mailbox` already points to a different server, if installed bundle files differ, or if the older `session-mailbox-notify` plugin is enabled. Resolve the conflict, then run it again.
+- **Do not use Hermes `state.db` as the mailbox.** The installer rejects it.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
