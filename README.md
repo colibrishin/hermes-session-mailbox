@@ -109,6 +109,8 @@ A rejected call, such as an ACK from the wrong recipient, returns a tool result 
 
 - **One install per profile.** Each profile loads its own copy of the plugin. Install it in every profile that sends or receives.
 - **Wake needs a running owner.** Automatic wake works only when the recipient session runs in a Hermes runtime that has the plugin enabled. Otherwise the message waits in the inbox.
+- **Focused coding sessions hide the tools.** With `agent.coding_context: focus`, Hermes limits a code-workspace session to the coding toolset, so the `session-mailbox` tools are not offered. The default (`auto`) is not affected.
+- **Disabled in `hermes tools`.** If you turn off the `session-mailbox` toolset in `hermes tools`, the tools stay off until you turn it back on.
 - **Do not use Hermes `state.db` as the mailbox.** The plugin rejects it.
 
 ## License
