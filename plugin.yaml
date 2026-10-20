@@ -1,21 +1,25 @@
 manifest_version: 2
 name: session-mailbox-bundle
-version: 1.2.2
-description: Exact-session mailbox notices and owning-runtime idle wake via native prompt.submit.
+version: 2.0.0
+description: Exact-session mailbox tools, activity notices and owning-runtime idle wake via native prompt.submit.
 author: Local Hermes operator
 license: MIT
-provides_tools: []
+provides_tools:
+  - session_mailbox_list_sessions
+  - session_mailbox_send
+  - session_mailbox_inbox
+  - session_mailbox_ack
+  - session_mailbox_message_status
 provides_hooks:
   - pre_llm_call
   - transform_tool_result
   - on_session_start
 config_schema:
-
   hermes_root:
     type: str
-    required: true
-    description: Explicit absolute global Hermes data root, never a named-profile home.
+    required: false
+    description: Optional absolute global Hermes data root, never a named-profile home. Default is the global root of the active home.
   db_path:
     type: str
-    required: true
-    description: Explicit absolute shared mailbox SQLite path, never Hermes state.db.
+    required: false
+    description: Optional absolute shared mailbox SQLite path, never Hermes state.db. Default is <hermes_root>/session-mailbox/mailbox.sqlite3.

@@ -1,2 +1,0 @@
-# Install only into a dedicated MCP interpreter, never into Hermes' environment.
-mcp==2.0.0

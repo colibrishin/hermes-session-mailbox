@@ -12,7 +12,7 @@ metadata:
 # Peer-session collaboration
 
 Coordinate authorized work without disturbing the peer's active work. This skill
-uses the session-mailbox MCP tools; it does not grant permissions or authenticate
+uses the session-mailbox plugin tools; it does not grant permissions or authenticate
 senders. All addresses and message identifiers below are placeholders.
 
 ## When to use
@@ -23,8 +23,8 @@ senders. All addresses and message identifiers below are placeholders.
 
 ## Prerequisites
 
-Enable the session-mailbox MCP registration for mailbox operations. The native
-bundle plugin exposes this read-only skill as
+Enable the `session-mailbox-bundle` plugin for mailbox operations. It provides
+the `session_mailbox_*` tools and exposes this read-only skill as
 `session-mailbox-bundle:hermes-peer-session-collaboration` while loaded.
 Use `tool_describe` to load the exact tools' schemas if they are deferred.
 Native `session_search` is optional; no other plugin or helper skill is required.
@@ -33,7 +33,7 @@ Native `session_search` is optional; no other plugin or helper skill is required
 
 ### 1. Read an explicit inbox directly
 
-Call `mcp__session_mailbox__inbox(profile="<recipient-profile>",
+Call `session_mailbox_inbox(profile="<recipient-profile>",
 session="<stored-recipient-session>", limit=20)` when given that address.
 Do not require environment or session discovery merely to read it.
 Read the returned message bodies, not just notice metadata. When `has_more` is
@@ -41,9 +41,9 @@ true, pass the last returned message UUID as `after` on the next call. This is a
 recipient-local message anchor, not a session ID or UI cursor. Finish pagination
 before claiming complete coverage of the pending messages returned by this scan.
 
-Call `mcp__session_mailbox__ack` with the exact recipient `profile`, `session`,
+Call `session_mailbox_ack` with the exact recipient `profile`, `session`,
 and `message_ids` actually read. ACK is explicit and means acknowledged, not
-executed. Confirm each ACK through `mcp__session_mailbox__message_status` for
+executed. Confirm each ACK through `session_mailbox_message_status` for
 its exact `message_id`. Never ACK unread messages from a notice or count alone.
 If no unresolved authorized action remains, report briefly and stop: no reply,
 wake request, watcher, or coordination task is needed.
@@ -56,7 +56,7 @@ native subagent handle, or inferred recent-session match is not that pair.
 
 If available, use native `session_search` with bounded topic/history queries to
 find relevant work and read its latest state, following that tool's schema.
-Otherwise use `mcp__session_mailbox__list_sessions(profile="<known-profile>",
+Otherwise use `session_mailbox_list_sessions(profile="<known-profile>",
 include_recent=true, limit=20, offset=0)`. Omit `profile` only when it is unknown.
 Follow `next_offset` while `has_more` within a bounded discovery budget.
 This returns metadata, not transcripts; inspect `warnings` and `warning_count`.
@@ -85,7 +85,7 @@ If either value is missing, stop the send and obtain a verified session mapping.
 
 ### 4. Send only useful, authorized coordination
 
-Call `mcp__session_mailbox__send` with explicit `sender_profile`,
+Call `session_mailbox_send` with explicit `sender_profile`,
 `sender_session`, `recipient_profile`, `recipient_session`, `body`, and `key`.
 For a reply, use the received sender pair and its message UUID as `reply_to`.
 State the applicable user-authorized scope, what you will not touch, the exact
@@ -96,11 +96,11 @@ Keep a stable key for one logical send. Idempotency is scoped to the sender
 profile/session plus key, NOT to the recipient. Retry only the identical
 recipient, body and `reply_to`; conflicting reuse fails. Use distinct keys for
 different recipients or changed payloads. Preserve the returned message ID and
-read `mcp__session_mailbox__message_status(message_id="<message-uuid>")` to
+read `session_mailbox_message_status(message_id="<message-uuid>")` to
 verify routing and stored state. If a response is lost, retry the identical
 send with the same key, not a new key that could duplicate delivery.
 
-Sending also requests wake; there is no separate wake MCP tool in this bundle.
+Sending also requests wake; there is no separate wake tool in this bundle.
 Do not send empty follow-ups to force a wake or repeatedly resend a busy message.
 Queued delivery does not require waiting for ACK before independent work.
 
