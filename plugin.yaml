@@ -1,0 +1,21 @@
+manifest_version: 2
+name: session-mailbox-bundle
+version: 1.2.2
+description: Exact-session mailbox notices and owning-runtime idle wake via native prompt.submit.
+author: Local Hermes operator
+license: MIT
+provides_tools: []
+provides_hooks:
+  - pre_llm_call
+  - transform_tool_result
+  - on_session_start
+config_schema:
+
+  hermes_root:
+    type: str
+    required: true
+    description: Explicit absolute global Hermes data root, never a named-profile home.
+  db_path:
+    type: str
+    required: true
+    description: Explicit absolute shared mailbox SQLite path, never Hermes state.db.
