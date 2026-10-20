@@ -72,17 +72,7 @@ hermes config set plugins.entries.session-mailbox-bundle.settings.db_path C:/pat
 
 An override must be an absolute path. The plugin refuses to load if `db_path` is named `state.db`, is under `<hermes_root>/profiles`, or is inside a plugin directory.
 
-## Upgrading from 1.x
-
-Version 2.0.0 replaces the separate MCP server with tools inside the plugin. The tool names change from `mcp__session_mailbox__*` to `session_mailbox_*`.
-
-In each profile that had 1.x:
-
-1. Remove the old MCP server entry: `hermes mcp remove session_mailbox`.
-2. If the older `session-mailbox-notify` plugin is enabled, disable it: `hermes plugins disable session-mailbox-notify`.
-3. Remove the old plugin copy with `hermes plugins remove session-mailbox-bundle`, then install as above.
-
-The default `db_path` is the path the 1.x instructions used. Messages that are still queued stay readable after the upgrade. If you used a different `--db` in 1.x, set `db_path` to that path.
+Upgrading from 1.x? See [MIGRATION.md](MIGRATION.md).
 
 ## Usage
 
