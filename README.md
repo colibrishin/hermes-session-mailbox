@@ -119,13 +119,40 @@ The jobs:
 - **pinned** runs Hermes `v0.22.2` (commit `d923a5e`), the version this plugin was developed against. It runs on Ubuntu and Windows for every push and pull request, and it must pass.
 - **latest** runs the upstream `main` branch on Ubuntu, for every push and once a week. It may fail without blocking. A failure there is an early warning that upstream changed an interface this plugin uses.
 
-The tests use only temporary directories. They also redirect `HOME`, `USERPROFILE`, and `LOCALAPPDATA`, because Hermes writes launchers and runtimes under the user's default data directory. They never touch your real Hermes data. The install test copies the last commit of this checkout, so commit your plugin changes before you run it.
+The tests use only temporary directories. They also redirect `HOME`, `USERPROFILE`, `LOCALAPPDATA` and `APPDATA`, because Hermes writes launchers and runtimes under the user's default data directory. The install test copies the last commit of this checkout, so commit your plugin changes before you run it.
 
-To run the tests locally, use a separate venv where Hermes is installed from a source checkout (`pip install -e <hermes-agent checkout>`):
+Redirecting the environment is not enough on its own. The Hermes package manager decides which data root owns a Hermes checkout from the checkout's location and install stamp, not from `HOME` or `LOCALAPPDATA`. A checkout inside your Hermes data directory (for example the one Hermes runs from, `~/.hermes/hermes-agent` or `%LOCALAPPDATA%\hermes\hermes-agent`) can therefore make a test install write into your real `bin/`, `installs/` and `tools/`. So `tests/_support.py` checks, before it writes anything, that the Hermes checkout, the venv, the temp directory and the package manager's owner and store all stay outside your Hermes data directory (`~/.hermes`, `%LOCALAPPDATA%\hermes`, or `$HERMES_HOME`). If one does not, every test module fails at import with `REFUSING TO RUN`.
+
+### Running the tests locally
+
+Use a dedicated Hermes clone, venv and temp directory, all OUTSIDE your Hermes data directory. Never `pip install -e` the checkout Hermes itself runs from. Do not run the tests from a shell that Hermes started either: such a shell sets `TMPDIR`, which may point inside the data directory. Start a new terminal instead. Upstream Hermes needs Python 3.14.
+
+POSIX (`~/src` is an example; any directory outside `~/.hermes` works):
+
+```bash
+mkdir -p ~/src/hsm-ci && cd ~/src/hsm-ci
+git clone https://github.com/NousResearch/hermes-agent.git
+git -C hermes-agent checkout d923a5eb487a17c0a68801bba9ef0f56c81040a8   # v0.22.2, the pinned CI ref
+python3.14 -m venv venv
+venv/bin/python -m pip install -e ./hermes-agent
+git clone <this repository> hermes-session-mailbox
+mkdir -p tmp && TMPDIR="$PWD/tmp" venv/bin/python hermes-session-mailbox/tests/run.py
+```
+
+Windows (`C:\hsm-ci` is an example; any directory outside `%LOCALAPPDATA%\hermes` works):
 
 ```text
-<hermes-venv-python> tests/run.py
+mkdir C:\hsm-ci && cd /d C:\hsm-ci
+git clone https://github.com/NousResearch/hermes-agent.git
+git -C hermes-agent checkout d923a5eb487a17c0a68801bba9ef0f56c81040a8
+py -3.14 -m venv venv
+venv\Scripts\python -m pip install -e .\hermes-agent
+git clone <this repository> hermes-session-mailbox
+mkdir tmp && set "TEMP=C:\hsm-ci\tmp" && set "TMP=C:\hsm-ci\tmp"
+venv\Scripts\python hermes-session-mailbox\tests\run.py
 ```
+
+`tests/run.py` exits non-zero when any test fails, errors or is skipped, and when it cannot remove the temporary fixture tree.
 
 ## License
 

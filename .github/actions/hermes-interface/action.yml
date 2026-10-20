@@ -32,6 +32,8 @@ runs:
 
     - name: Install Hermes (editable; upstream blocks wheel builds outside Nix)
       shell: bash
+      env:
+        HERMES_REF: ${{ inputs.hermes-ref }}
       run: |
         set -euo pipefail
         python -m venv "$RUNNER_TEMP/hermes-venv"
@@ -40,7 +42,7 @@ runs:
         echo "HERMES_TEST_PYTHON=$py" >> "$GITHUB_ENV"
         sha=$(git -C _hermes rev-parse HEAD)
         version=$("$py" -c "import hermes_cli; print(hermes_cli.__release_date__)")
-        echo "Hermes Agent ${{ inputs.hermes-ref }} -> \`$sha\` (release date $version)" >> "$GITHUB_STEP_SUMMARY"
+        echo "Hermes Agent $HERMES_REF -> \`$sha\` (release date $version)" >> "$GITHUB_STEP_SUMMARY"
 
     - name: Run interface tests
       shell: bash

@@ -8,9 +8,16 @@ Why HOME/LOCALAPPDATA too: Hermes treats any HERMES_HOME under the platform
 default root (~/.hermes or %LOCALAPPDATA%/hermes) as that root, and its package
 manager publishes launchers and runtimes under the platform default root. A
 temporary HERMES_HOME alone is therefore not isolated.
+
+Import also fails closed (IsolationError) before anything is written when the Hermes checkout,
+the venv or the fixture base lies inside a real Hermes data root recorded
+from the ORIGINAL environment, or when the Hermes package manager would borrow another root's
+installs/ or tools/ (pm.environments.owning_home_root / store_root read neither HOME nor
+LOCALAPPDATA, so redirecting the environment alone cannot prevent that).
 """
 from __future__ import annotations
 
+import atexit
 from contextlib import closing
 import json
 import os
@@ -51,18 +58,131 @@ def rmtree_force(path):
         raise AssertionError(f"fixture tree was not removed: {path}")
 
 
+class IsolationError(AssertionError):
+    """Raised at import time when the fixture could reach a real Hermes data root."""
+
+
+def _norm(path):
+    return os.path.normcase(os.path.abspath(os.path.realpath(path)))
+
+
+def _under(path, root):
+    path, root = _norm(path), _norm(root)
+    return path == root or path.startswith(root.rstrip(os.sep) + os.sep)
+
+
+def _real_hermes_roots(environ):
+    """Real Hermes data roots named by the ORIGINAL environment, computed without importing Hermes.
+
+    Mirrors hermes_constants._get_platform_default_hermes_home (LOCALAPPDATA on Windows, else
+    HOME/~) and get_default_hermes_root (a HERMES_HOME outside that default is its own root;
+    <root>/profiles/<name> belongs to <root>).
+    """
+    suffix = environ.get("HERMES_DATA_DIR_SUFFIX", "")
+    if os.name == "nt":
+        local = environ.get("LOCALAPPDATA", "").strip()
+        base = Path(local) if local else Path(environ.get("USERPROFILE") or Path.home()) / "AppData" / "Local"
+        roots = [base / ("hermes" + suffix)]
+    else:
+        roots = [Path(environ.get("HOME") or Path.home()) / (".hermes" + suffix)]
+    home = environ.get("HERMES_HOME", "").strip()
+    if home:
+        home = Path(os.path.expanduser(home))
+        if not _under(home, roots[0]):
+            roots.append(home.parent.parent if home.parent.name == "profiles" else home)
+    return [Path(_norm(root)) for root in roots]
+
+
+def _refuse(problems):
+    raise IsolationError(
+        "REFUSING TO RUN: this test setup could read or write a real Hermes data directory.\n  - "
+        + "\n  - ".join(problems)
+        + "\nRun the tests from a dedicated hermes-agent clone and venv OUTSIDE your Hermes data directory "
+          "(~/.hermes, %LOCALAPPDATA%\\hermes, or $HERMES_HOME), with TMPDIR/TEMP outside it too. "
+          "See README.md, 'Running the tests locally'.")
+
+
+def _check_original_layout():
+    """Before any redirect or write: nothing this run uses may live inside a real Hermes root."""
+    import importlib.util
+    problems = []
+    try:
+        constants = importlib.util.find_spec("hermes_constants")
+    except (ImportError, ValueError):
+        constants = None
+    if constants is None or not constants.origin:
+        problems.append("hermes_constants is not importable; install Hermes into this interpreter")
+    source = Path(constants.origin).parent if constants is not None and constants.origin else None
+    checks = [("Hermes source checkout (hermes_constants)", source),
+              ("Python environment (sys.prefix)", Path(sys.prefix)),
+              ("fixture base (SMB_CI_BASE or the temp dir)", Path(os.environ.get("SMB_CI_BASE") or tempfile.gettempdir()))]
+    for label, path in checks:
+        for root in REAL_ROOTS:
+            if path is not None and _under(path, root):
+                problems.append(f"{label} {path} is inside the real Hermes root {root}")
+    if problems:
+        _refuse(problems)
+
+
+def _check_package_manager():
+    """After the redirect: the package manager must not borrow another root's installs/ or tools/."""
+    problems = []
+    try:
+        from pm.environments import owning_home_root, store_root
+        from pm.paths import repo_root
+    except ImportError as exc:
+        _refuse([f"cannot import the Hermes package-manager path helpers ({exc!r}); upstream changed "
+                 "pm.environments.owning_home_root/store_root or pm.paths.repo_root"])
+    checkout = Path(repo_root())
+    owner = owning_home_root(checkout)
+    if owner is not None:
+        problems.append(f"pm.environments.owning_home_root({checkout}) = {owner}: the package manager would "
+                        "borrow that root's installs/ and tools/ instead of the fixture")
+    store = store_root(checkout, honor_runtime_override=False)
+    for root in REAL_ROOTS:
+        if _under(store, root):
+            problems.append(f"pm.environments.store_root({checkout}) = {store} is inside the real Hermes root {root} "
+                            "(the checkout's install stamp points there)")
+    if not _under(store, ROOT) and not _under(store, checkout):
+        problems.append(f"pm.environments.store_root({checkout}) = {store} is outside the fixture {ROOT}")
+    if problems:
+        _refuse(problems)
+
+
+# 1. Record the real roots from the untouched environment and refuse before creating anything.
+REAL_ROOTS = _real_hermes_roots(dict(os.environ))
+_check_original_layout()
+
+# 2. Create the fixture and redirect every root Hermes, its package manager, uv and pip derive paths from.
+_OWN_BASE = not os.environ.get("SMB_CI_BASE")
 BASE = Path(os.environ.get("SMB_CI_BASE") or tempfile.mkdtemp(prefix="smb-ci-")).resolve()
 USER_HOME = BASE / "user"
 LOCAL_APPDATA = USER_HOME / "AppData" / "Local"
+ROAMING_APPDATA = USER_HOME / "AppData" / "Roaming"
 ROOT = (LOCAL_APPDATA / "hermes") if os.name == "nt" else (USER_HOME / ".hermes")
 PROFILE_HOME = ROOT / "profiles" / PROFILE
 LOCAL_APPDATA.mkdir(parents=True)
-for _name in [name for name in os.environ if name.startswith(("HERMES_", "XDG_"))]:
+ROAMING_APPDATA.mkdir(parents=True)
+if _OWN_BASE:
+    # Run without tests/run.py (python -m unittest ...): remove the fixture at exit, best effort.
+    # tests/run.py instead removes it from the parent process and asserts removal.
+    def _remove_own_base():
+        try:
+            rmtree_force(BASE)
+        except Exception as exc:  # Windows may still hold a handle during interpreter shutdown
+            print(f"fixture cleanup failed, remove {BASE} by hand: {exc!r}", file=sys.stderr)
+
+    atexit.register(_remove_own_base)
+for _name in [name for name in os.environ if name.startswith(("HERMES_", "XDG_", "UV_", "PIP_"))]:
     os.environ.pop(_name)
 os.environ.update(HOME=str(USER_HOME), USERPROFILE=str(USER_HOME), LOCALAPPDATA=str(LOCAL_APPDATA),
-                  HERMES_HOME=str(ROOT), PYTHONIOENCODING="utf-8", PYTHONDONTWRITEBYTECODE="1",
-                  NO_COLOR="1", OPENAI_API_KEY="", OPENROUTER_API_KEY="", ANTHROPIC_API_KEY="")
+                  APPDATA=str(ROAMING_APPDATA), HERMES_HOME=str(ROOT), PYTHONIOENCODING="utf-8",
+                  PYTHONDONTWRITEBYTECODE="1", NO_COLOR="1", OPENAI_API_KEY="", OPENROUTER_API_KEY="",
+                  ANTHROPIC_API_KEY="")
 sys.dont_write_bytecode = True
+
+# 3. With the redirect in place, prove the resolvers point at the fixture before any test writes.
+_check_package_manager()
 
 
 def hermes_executable():
@@ -80,6 +200,7 @@ def check_isolation():
         f"hermes_constants.get_hermes_home() resolved {get_hermes_home()}, expected the fixture {ROOT}"
     assert Path(get_default_hermes_root()).resolve() == ROOT, \
         f"hermes_constants.get_default_hermes_root() resolved {get_default_hermes_root()}, expected {ROOT}"
+    _check_package_manager()
 
 
 def run_hermes(*args, timeout=900):

@@ -127,8 +127,10 @@ class NativeLoadTests(unittest.TestCase):
                       "model_tools._apply_transform_tool_result_hook did not apply transform_tool_result")
 
     def test_7_on_session_start_starts_receiver(self):
-        if self.tui_preloaded:
-            self.skipTest(f"{TUI_MODULE} was imported before plugin load; cannot isolate on_session_start")
+        # A failure, not a skip: a skipped test would let CI pass without checking on_session_start.
+        self.assertFalse(self.tui_preloaded, f"{TUI_MODULE} was already imported before the plugin loaded, so this "
+                         "test cannot show that on_session_start starts the wake receiver. Find the importer "
+                         "(upstream Hermes or another test module) and keep it out of this process.")
         self.assertIsNone(_monitor_for_root(), "receiver started before tui_gateway.server was imported")
         import tui_gateway.server  # noqa: F401  the owning runtime the receiver attaches to
         from hermes_cli.lifecycle import invoke_hook
@@ -162,8 +164,8 @@ class NativeLoadTests(unittest.TestCase):
         self.assertIsNone(self.manager.find_plugin_skill(s.QUALIFIED_SKILL), "PluginManager.unload left the skill")
         self.assertIsNone(_monitor_for_root(), "on_unload disposer did not remove the wake monitor")
         monitor = getattr(type(self), "monitor", None)
-        if monitor is not None:
-            self.assertFalse(monitor.thread.is_alive(), "wake monitor thread still running after unload")
+        self.assertIsNotNone(monitor, "test_7 did not record the wake monitor, so unload cannot be checked")
+        self.assertFalse(monitor.thread.is_alive(), "wake monitor thread still running after unload")
         self.assertFalse([t for t in threading.enumerate() if t.name == "session-mailbox-wake"])
 
 
