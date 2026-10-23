@@ -4,6 +4,9 @@ inputs:
   hermes-ref:
     description: Upstream NousResearch/hermes-agent commit, tag or branch.
     required: true
+  test-script:
+    description: Plugin test entry point, separated for old and canonical Hermes interfaces.
+    default: plugin/tests/run.py
 runs:
   using: composite
   steps:
@@ -46,4 +49,6 @@ runs:
 
     - name: Run interface tests
       shell: bash
-      run: '"$HERMES_TEST_PYTHON" plugin/tests/run.py'
+      env:
+        TEST_SCRIPT: ${{ inputs.test-script }}
+      run: '"$HERMES_TEST_PYTHON" "$TEST_SCRIPT"'

@@ -44,6 +44,24 @@ jobs:
         with:
           hermes-ref: ${{ env.HERMES_PINNED_REF }}
 
+  native-desktop:
+    name: native Desktop wake (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: plugin
+          persist-credentials: false
+      - uses: ./plugin/.github/actions/hermes-interface
+        with:
+          hermes-ref: 8edc5ea255aaf17b1f1f944bc2dcce52fce06fa8
+          test-script: plugin/tests/native_gateway.py
+
   latest:
     name: latest Hermes main (ubuntu-latest, non-blocking)
     if: github.event_name != 'pull_request'
@@ -58,3 +76,6 @@ jobs:
       - uses: ./plugin/.github/actions/hermes-interface
         with:
           hermes-ref: main
+      - name: Native Desktop wake regressions
+        shell: bash
+        run: '"$HERMES_TEST_PYTHON" plugin/tests/native_gateway.py'
