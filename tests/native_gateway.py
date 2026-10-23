@@ -31,7 +31,7 @@ class NativeGatewayTests(unittest.TestCase):
             scratch = str(Path(os.environ['HERMES_HOME']) / 'cache' / 'scratch')
         self.tmp = tempfile.TemporaryDirectory(prefix='mailbox-native-', dir=scratch)
         self.addCleanup(self.tmp.cleanup)
-        self.home = Path(self.tmp.name)
+        self.home = Path(self.tmp.name).resolve()
         self.db = self.home / 'mailbox.sqlite3'
         (self.home / 'runtime').mkdir()
         (self.home / 'runtime' / 'active_sessions.json').write_text(
