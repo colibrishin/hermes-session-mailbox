@@ -59,7 +59,9 @@ jobs:
           persist-credentials: false
       - uses: ./plugin/.github/actions/hermes-interface
         with:
-          hermes-ref: 8edc5ea255aaf17b1f1f944bc2dcce52fce06fa8
+          # Installed canonical-core revision; newer main currently has an
+          # unsatisfiable pip dependency set, before any plugin tests can run.
+          hermes-ref: 4d04303818b61bf3aa09278af48356315515965b
           test-script: plugin/tests/native_gateway.py
 
   latest:
