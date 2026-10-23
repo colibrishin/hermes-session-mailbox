@@ -62,7 +62,11 @@ def resolve_settings(ctx, package_root):
 def _local_module(package_root, stem, prefix):
     """Import only this distribution's stdlib core by path; never search peer paths."""
     source = package_root / (stem + ".py")
-    name = prefix + hashlib.sha256(str(source).encode()).hexdigest()[:16]
+    source_bytes = source.read_bytes()
+    # A process may retain the previous component after a live plugin update.
+    # Preserve it for any existing references, but never hand it to new code.
+    digest = hashlib.sha256(str(source).encode() + b"\0" + source_bytes).hexdigest()
+    name = prefix + digest
     with _IMPORT_LOCK:
         module = sys.modules.get(name)
         if module is None:
@@ -72,7 +76,7 @@ def _local_module(package_root, stem, prefix):
             module = importlib.util.module_from_spec(spec)
             sys.modules[name] = module
             try:
-                spec.loader.exec_module(module)
+                exec(compile(source_bytes, str(source), "exec"), module.__dict__)
             except BaseException:
                 sys.modules.pop(name, None)
                 raise
