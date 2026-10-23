@@ -27,6 +27,7 @@ Upgrading from 1.x? See [MIGRATION.md](MIGRATION.md).
 Ask the agent to find another session and send it a message. The bundled skill, `session-mailbox-bundle:hermes-peer-session-collaboration`, guides the agent through sending, reading, and acknowledging messages.
 
 - A recipient address is an exact profile and stored session ID pair. `session_mailbox_list_sessions` lists known addresses; it does not prove a session is running.
+- Session discovery defaults to compact `profile`, `session`, and `title` rows, newest activity first, with subagents excluded. Use `query` to search titles/addresses within the bounded recent candidates, `include_subagents=true` to include workers, or `detailed=true` for metadata and unverified activity hints. `include_recent=false` restricts discovery to registry entries.
 - Messages remain `queued` until the recipient explicitly acknowledges them. A notice or wake is not an acknowledgment.
 - Automatic wake requires the recipient's Hermes runtime to be running with the plugin enabled. Otherwise, the message waits in the inbox.
 

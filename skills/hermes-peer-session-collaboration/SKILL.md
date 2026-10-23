@@ -60,7 +60,11 @@ Otherwise use `session_mailbox_list_sessions(profile="<known-profile>",
 include_recent=true, limit=20, offset=0)`. Omit `profile` only when it is unknown.
 Follow `next_offset` while `has_more` within a bounded discovery budget.
 This returns metadata, not transcripts; inspect `warnings` and `warning_count`.
-Results sort by profile and stored ID, not last activity. `include_recent` adds
+Results default to recent-activity order with compact `profile`, `session`, and
+optional `title` fields; use the exact `session` as the stored recipient ID.
+Subagents are excluded unless `include_subagents=true`; `query` searches bounded
+recent candidates and `detailed=true` adds metadata, not verified liveness.
+`include_recent` adds
 only up to `recent_per_profile_limit` stored sessions per profile. Neither an
 empty result nor `active_hint` proves absence, liveness, ownership, or idleness.
 If metadata cannot establish the owner, ask for the exact address or handoff

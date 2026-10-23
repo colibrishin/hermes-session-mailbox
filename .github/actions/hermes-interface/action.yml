@@ -53,4 +53,5 @@ runs:
         TEST_SCRIPT: ${{ inputs.test-script }}
       run: |
         "$HERMES_TEST_PYTHON" plugin/tests/reload_regression.py
+        "$HERMES_TEST_PYTHON" plugin/tests/session_listing.py
         "$HERMES_TEST_PYTHON" "$TEST_SCRIPT"

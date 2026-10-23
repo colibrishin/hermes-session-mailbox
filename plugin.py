@@ -106,8 +106,10 @@ def _schema(name, description, properties, required=()):
 TOOL_SPECS = (
     ("session_mailbox_list_sessions",
      "List exact profile + stored session addresses, read-only metadata only. "
-     "Registry active_hint is not verified alive or idle. ",
-     {"profile": dict(_OPT_STR), "include_recent": {"type": "boolean", "default": False},
+     "Recent chats first; subagents hidden by default. detailed adds unverified activity hints, not proof of liveness. ",
+     {"profile": dict(_OPT_STR), "include_recent": {"type": "boolean", "default": True},
+      "include_subagents": {"type": "boolean", "default": False},
+      "query": dict(_OPT_STR), "detailed": {"type": "boolean", "default": False},
       "limit": {"type": "integer", "default": 20}, "offset": {"type": "integer", "default": 0}},
      ()),
     ("session_mailbox_send",
@@ -208,8 +210,10 @@ class MailboxTools:
                 self._wakes = _wake_class(self.package_root)(self.db_path, self.hermes_root)
             return self._wakes
 
-    def list_sessions(self, profile, include_recent, limit, offset):
-        return self.mailbox().list_sessions(profile, include_recent, limit, offset)
+    def list_sessions(self, profile=None, include_recent=True, limit=20, offset=0,
+                      include_subagents=False, query=None, detailed=False):
+        return self.mailbox().list_sessions(profile, include_recent, limit, offset,
+                                            include_subagents, query, detailed)
 
     def send(self, sender_profile, sender_session, recipient_profile, recipient_session, body, key, reply_to):
         result = self.mailbox().send(sender_profile, sender_session, recipient_profile, recipient_session,

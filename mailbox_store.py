@@ -290,11 +290,16 @@ class Mailbox:
             return [{**self._message(row, False), "notice_channel": channel, "notice_claimed_at": now}
                     for row in rows]
 
-    def list_sessions(self, profile=None, include_recent=False, limit=20, offset=0):
+    def list_sessions(self, profile=None, include_recent=True, limit=20, offset=0,
+                      include_subagents=False, query=None, detailed=False):
         bounded_int(limit, "limit")
         bounded_int(offset, "offset", 0, 10000)
         if not isinstance(include_recent, bool):
             raise ValueError("include_recent must be boolean")
+        if not isinstance(include_subagents, bool) or not isinstance(detailed, bool):
+            raise ValueError("include_subagents and detailed must be boolean")
+        if query is not None and (not isinstance(query, str) or len(query) > 256):
+            raise ValueError("query must be a string within 256 characters")
         homes = self._profiles()
         if profile is not None:
             if not isinstance(profile, str) or not PROFILE_RE.fullmatch(profile) or profile not in homes:
@@ -317,17 +322,19 @@ class Mailbox:
                     "active_hint": True, "verified_alive": None,
                     "liveness": "unverified_registry_hint",
                     "surface": str(entry.get("surface") or "unknown")[:64],
+                    "last_active": entry.get("updated_at", entry.get("started_at")),
                 }
             if include_recent and (home / "state.db").is_file():
                 try:
                     with self._session_db(home) as db:
                         columns = {row["name"] for row in db.execute("PRAGMA table_info(sessions)")}
                         # Only schema-known metadata columns, never SELECT * or transcript/message tables.
-                        selected = [column for column in ("id", "title", "source", "started_at") if column in columns]
+                        selected = [column for column in ("id", "title", "source", "started_at", "last_activity_at") if column in columns]
                         if "id" not in selected:
                             raise ValueError("sessions metadata table has no id column")
-                        order = "started_at DESC, id" if "started_at" in selected else "id"
-                        rows = db.execute("SELECT " + ",".join(selected) + " FROM sessions ORDER BY " + order + " LIMIT ?",
+                        order = "COALESCE(last_activity_at, started_at) DESC, id" if "last_activity_at" in selected and "started_at" in selected else ("started_at DESC, id" if "started_at" in selected else "id")
+                        where = " WHERE (source IS NULL OR source != 'subagent')" if not include_subagents and "source" in selected else ""
+                        rows = db.execute("SELECT " + ",".join(selected) + " FROM sessions" + where + " ORDER BY " + order + " LIMIT ?",
                                           (MAX_PAGE,)).fetchall()
                     for row in rows:
                         identifier = row["id"]
@@ -342,10 +349,22 @@ class Mailbox:
                                 item[column] = str(row[column])[:bound]
                         if "started_at" in row.keys():
                             item["started_at"] = row["started_at"]
+                        activity = [item.get("last_active"), item.get("started_at")]
+                        if "last_activity_at" in row.keys():
+                            activity.append(row["last_activity_at"])
+                        item["last_active"] = max((v for v in activity if isinstance(v, (int, float))), default=0)
                 except (OSError, ValueError, sqlite3.Error) as exc:
                     warnings.append({"profile": name, "source": "sessions_metadata", "error": str(exc)[:256]})
-        ordered = [sessions[key] for key in sorted(sessions)]
+        ordered = [item for item in sessions.values()
+                   if (include_subagents or (item.get("source") != "subagent" and "subagent" not in item.get("surface", "")))
+                   and (not query or query.casefold() in " ".join(str(item.get(k, "")) for k in ("profile", "session", "title")).casefold())]
+        def recent(item):
+            value = item.get("last_active") or item.get("started_at")
+            return float(value) if isinstance(value, (int, float)) else 0
+        ordered.sort(key=lambda item: (-recent(item), item["profile"], item["session"]))
         page = ordered[offset:offset + limit]
+        if not detailed:
+            page = [{k: item[k] for k in ("profile", "session", "title") if k in item} for item in page]
         has_more = len(ordered) > offset + limit
         return {"sessions": page, "has_more": has_more, "next_offset": offset + limit if has_more else None,
                 "warnings": warnings[:20], "warning_count": len(warnings),
