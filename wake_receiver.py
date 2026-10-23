@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+from functools import cached_property
 import importlib.util
 import json
 import logging
@@ -191,22 +192,127 @@ class Receiver:
                 raise RuntimeError("mailbox monitor did not stop; do not start a replacement")
 
 
-def start_receiver(home, root, db_path):
-    """Return a disposer, or None for a process which does not own TUI sessions."""
+class GatewayReceiver(Receiver):
+    """Use the canonical owner's event loop and native plugin injection, no transport."""
+
+    def __init__(self, ctx, home, root, db_path):
+        self.ctx = ctx
+        self.home, self.root = Path(home).resolve(), Path(root).resolve()
+        self.profile = profile_for_home(self.home, self.root)
+        self.db_path = db_path
+        self.stop_event = threading.Event()
+        self.thread = None
+        self.last_error_at = 0.0
+
+    @cached_property
+    def mailbox(self):
+        return _local("mailbox_store").Mailbox(self.db_path, self.root)
+
+    @cached_property
+    def wakes(self):
+        return _local("wake_store").WakeStore(self.db_path, self.root)
+
+    def tick(self):
+        # Inspect asyncio-owned sessions only on their owning loop. Waiting here also
+        # prevents a second scan while a delayed first scan is still outstanding.
+        registered = self.ctx._manager._gateway_message_injector
+        if registered is None:
+            return
+        host = registered[0]
+        loop = getattr(host, "_gateway_loop", None)
+        if loop is None or not loop.is_running():
+            return
+        done = threading.Event()
+        errors = []
+
+        def scan():
+            try:
+                if not self.stop_event.is_set():
+                    self._tick_gateway()
+            except Exception as exc:
+                errors.append(exc)
+            finally:
+                done.set()
+
+        loop.call_soon_threadsafe(scan)
+        while not done.wait(0.1):
+            if self.stop_event.is_set():
+                return
+        if errors:
+            raise errors[0]
+
+    def _tick_gateway(self):
+        from gateway.config import Platform
+        from gateway.session_authorities import authority_for_home
+        from hermes_state_runtime import list_session_admissions
+
+        registered = self.ctx._manager._gateway_message_injector
+        if registered is None or self.stop_event.is_set():
+            return
+        authority = authority_for_home(registered[0], self.home)
+        if authority is None or authority.retiring:
+            return
+        for stored_id, live in list(authority.sessions.items()):
+            if self.stop_event.is_set():
+                return
+            # Only canonical local routes have a stable FIFO owner across /new
+            # and compression. Messaging lane keys can rotate to another recipient.
+            if live.source.platform != Platform.LOCAL or live.source.chat_id != stored_id:
+                continue
+            if (live.superseded or (live.task is not None and not live.task.done())
+                    or live.controls.pending or live.claim_gate.locked()
+                    or live.mutation_lock.locked()):
+                continue
+            if list_session_admissions(authority.db, session_id=stored_id):
+                continue
+            for row in self.wakes.pending(self.profile, stored_id, limit=20):
+                mid = row["message_id"]
+                message = self.mailbox.status(mid)
+                if (message["recipient_profile"], message["recipient_session"]) != (self.profile, stored_id):
+                    raise ValueError("wake request recipient differs from immutable mailbox message")
+                if message.get("acknowledged_at"):
+                    self.wakes.finish(mid, "acknowledged", "message was already acknowledged")
+                    continue
+                if not self.wakes.claim(mid, f"{os.getpid()}:{stored_id}"):
+                    continue
+                try:
+                    accepted = self.ctx.inject_message(
+                        wake_text(self.profile, stored_id, mid), session_key=live.route)
+                    # The public API reports scheduling only, not durable admission or
+                    # execution. False may hide an exception after scheduling: never retry.
+                    self.wakes.finish(mid, "queued" if accepted else "unknown",
+                                      "native injection scheduled; admission unconfirmed" if accepted
+                                      else "native injection not confirmed; automatic retry suppressed",
+                                      {"stored_session_id": stored_id, "session_key": live.route})
+                except Exception:
+                    self.wakes.finish(mid, "unknown", "exception after durable dispatch claim")
+                    log.exception("mailbox native injection failed; automatic retry suppressed")
+                break
+
+
+def start_receiver(home, root, db_path, *, ctx=None):
+    """Return a disposer for a canonical gateway or legacy TUI owning runtime."""
+    manager = getattr(ctx, "_manager", None)
     server = sys.modules.get("tui_gateway.server")
+    native = (manager is not None and getattr(manager, "_cli_ref", None) is None
+              and (getattr(manager, "has_gateway_message_injector", False) or server is None))
+    if native and ctx is not None and not ctx._gateway_injection_allowed():
+        return None  # Permission refusal must never fall back to a different dispatch path.
     needed = ("_sessions", "_sessions_lock", "_methods", "_session_lookup_key",
               "_session_pending_kind", "_session_compression_in_flight", "_child_run_active",
               "_session_profile_runtime_scope", "_emit")
-    if server is None or any(not hasattr(server, name) for name in needed):
-        return None
-    if "prompt.submit" not in server._methods:
-        return None
+    if not native:
+        if server is None or any(not hasattr(server, name) for name in needed):
+            return None
+        if "prompt.submit" not in server._methods:
+            return None
     key = str(Path(home).resolve())
     with _MONITOR_LOCK:
         old = _MONITORS.get(key)
         if old is not None:
             return None  # This profile/process already owns a monitor and its disposer.
-        receiver = Receiver(server, home, root, db_path)
+        receiver = (GatewayReceiver(ctx, home, root, db_path) if native
+                    else Receiver(server, home, root, db_path))
         _MONITORS[key] = receiver
         receiver.start()
 

@@ -30,6 +30,18 @@ Ask the agent to find another session and send it a message. The bundled skill, 
 - Messages remain `queued` until the recipient explicitly acknowledges them. A notice or wake is not an acknowledgment.
 - Automatic wake requires the recipient's Hermes runtime to be running with the plugin enabled. Otherwise, the message waits in the inbox.
 
+Canonical Desktop/local-session wake uses Hermes's native plugin injection, not a
+bridge or a second submit. Enable it in the recipient profile:
+
+```text
+hermes config set plugins.entries.session-mailbox-bundle.allow_gateway_injection true
+```
+
+The receiver waits for its native host during startup. Messaging-platform lane
+keys are not used by this path because they can rotate to another conversation.
+Legacy TUI sessions retain their existing submit path; a wake uses only one path.
+Native `queued` records scheduling acceptance, not confirmed admission or execution.
+
 The tools are `session_mailbox_list_sessions`, `session_mailbox_send`, `session_mailbox_inbox`, `session_mailbox_ack`, and `session_mailbox_message_status`.
 
 ## Settings

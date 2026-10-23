@@ -295,13 +295,15 @@ def register(ctx):
         nonlocal receiver_started
         if receiver_started or not callable(getattr(ctx, "on_unload", None)):
             return
-        if sys.modules.get("tui_gateway.server") is None:
+        manager = getattr(ctx, "_manager", None)
+        if sys.modules.get("tui_gateway.server") is None and manager is None:
             return
         with receiver_lock:
             if receiver_started:
                 return
             module = _local_module(package_root, "wake_receiver", "_hermes_wake_receiver_")
-            dispose = module.start_receiver(get_hermes_home(), hermes_root, db_path)
+            home = getattr(manager, "home_path", None) or get_hermes_home()
+            dispose = module.start_receiver(home, hermes_root, db_path, ctx=ctx)
             if dispose is not None:
                 ctx.on_unload(dispose)
                 receiver_started = True
