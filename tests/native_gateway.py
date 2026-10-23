@@ -45,7 +45,10 @@ class NativeGatewayTests(unittest.TestCase):
         self.authority = SimpleNamespace(sessions={'recipient': self.live}, retiring=False, db=object())
         self.loop = asyncio.new_event_loop()
         self.thread = threading.Thread(target=self.loop.run_forever, daemon=True)
+        ready = threading.Event()
+        self.loop.call_soon(ready.set)
         self.thread.start()
+        self.assertTrue(ready.wait(5), 'fixture event loop did not start')
         self.addCleanup(self.shutdown)
         self.calls = []
         self.host = SimpleNamespace(_gateway_loop=self.loop)
