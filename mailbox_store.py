@@ -1,4 +1,4 @@
-"""Local plaintext mailbox; routing assertions are not authentication."""
+"""Local plaintext mailbox and wake claims; routing assertions are not authentication."""
 from __future__ import annotations
 
 from contextlib import contextmanager
@@ -14,7 +14,9 @@ PROFILE_RE = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}\Z")
 SESSION_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\Z")
 IDENTITY_MARKERS = ("config.yaml", ".env", "SOUL.md", "profile.yaml", "auth.json", "state.db")
 MAX_REQUEST_BYTES = 8192
+INBOX_RESPONSE_BYTES = 32768
 MAX_PAGE = 100
+WAKE_STATES = {"pending", "dispatching", "submitted", "queued", "acknowledged", "refused", "unknown"}
 
 
 def utc_now():
@@ -28,39 +30,54 @@ def bounded_int(value, name, minimum=1, maximum=MAX_PAGE):
 
 
 def message_uuid(value):
-    if not isinstance(value, str) or len(value) != 36:
-        raise ValueError("message_id must be an exact canonical UUID")
     try:
-        parsed = uuid.UUID(value)
-    except ValueError as exc:
-        raise ValueError("message_id must be an exact canonical UUID") from exc
-    if str(parsed) != value:
-        raise ValueError("message_id must be an exact canonical UUID")
-    return value
+        if isinstance(value, str) and len(value) == 36 and str(uuid.UUID(value)) == value:
+            return value
+    except ValueError:
+        pass
+    raise ValueError("message_id must be an exact canonical UUID")
 
 
-class Mailbox:
-    def __init__(self, db_path, hermes_root):
-        db_path, hermes_root = Path(db_path), Path(hermes_root)
-        if not db_path.is_absolute() or not hermes_root.is_absolute():
-            raise ValueError("--db and --hermes-root must be absolute paths")
-        self.db_path, self.hermes_root = db_path.resolve(), hermes_root.resolve()
-        if not self.hermes_root.is_dir():
-            raise ValueError("--hermes-root must be an existing Hermes root directory")
-        if self.hermes_root.parent.name == "profiles":
-            raise ValueError("--hermes-root must be the global root, not a profile home")
-        if self.db_path.name.lower() == "state.db" or self.db_path.is_relative_to(self.hermes_root / "profiles"):
-            raise ValueError("mailbox DB must not be Hermes state.db or profile-local")
+def check_address(profile, session):
+    if not isinstance(profile, str) or not PROFILE_RE.fullmatch(profile):
+        raise ValueError("invalid exact profile name")
+    if not isinstance(session, str) or not SESSION_RE.fullmatch(session):
+        raise ValueError("invalid exact stored session ID")
+
+
+def store_paths(db_path, hermes_root):
+    """Validate the operator settings shared by every store at the mailbox location."""
+    db_path, hermes_root = Path(db_path), Path(hermes_root)
+    if not db_path.is_absolute() or not hermes_root.is_absolute():
+        raise ValueError("session-mailbox db_path and hermes_root settings must be absolute paths")
+    db_path, hermes_root = db_path.resolve(), hermes_root.resolve()
+    if not hermes_root.is_dir():
+        raise ValueError("session-mailbox hermes_root setting must be an existing Hermes root directory")
+    if hermes_root.parent.name == "profiles":
+        raise ValueError("session-mailbox hermes_root setting must be the global root, not a profile home")
+    if db_path.name.lower() == "state.db" or db_path.is_relative_to(hermes_root / "profiles"):
+        raise ValueError("mailbox DB must not be Hermes state.db or profile-local")
+    return db_path, hermes_root
+
+
+def _json_bytes(value):
+    return len(json.dumps(value, ensure_ascii=False).encode("utf-8"))
+
+
+class _Store:
+    """One WAL SQLite file holding only this store's tables."""
+    TABLES = frozenset()
+    SCHEMA = ""
+
+    def _open(self, db_path):
+        self.db_path = db_path
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._initialize()
-
-    def _initialize(self):
         # SQLite's journal-mode transition can return BUSY immediately despite
         # busy_timeout when two new processes upgrade the same empty database.
         deadline = time.monotonic() + 3
         while True:
             try:
-                self._initialize_once()
+                self._initialize()
                 return
             except sqlite3.OperationalError as exc:
                 code = getattr(exc, "sqlite_errorcode", 0) & 0xff
@@ -68,40 +85,19 @@ class Mailbox:
                     raise
                 time.sleep(0.05)
 
-    def _initialize_once(self):
+    def _initialize(self):
         with self._connection(timeout=0.2) as db:
             tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-            if tables - {"messages", "notice_claims", "sqlite_sequence"}:
+            if tables - self.TABLES:
                 raise ValueError("refusing to use a database containing unrelated tables")
-            version = db.execute("PRAGMA user_version").fetchone()[0]
-            if version not in (0, 1):
-                raise ValueError("unsupported mailbox schema version")
+            if db.execute("PRAGMA user_version").fetchone()[0] not in (0, 1):
+                raise ValueError("unsupported session-mailbox schema version")
             mode = db.execute("PRAGMA journal_mode").fetchone()[0]
             if mode.lower() != "wal":
                 mode = db.execute("PRAGMA journal_mode=WAL").fetchone()[0]
             if mode.lower() != "wal":
-                raise RuntimeError("mailbox requires SQLite WAL")
-            db.executescript("""
-                BEGIN IMMEDIATE;
-                CREATE TABLE IF NOT EXISTS messages (
-                    seq INTEGER PRIMARY KEY AUTOINCREMENT,
-                    id TEXT NOT NULL UNIQUE,
-                    sender_profile TEXT NOT NULL, sender_session TEXT NOT NULL,
-                    recipient_profile TEXT NOT NULL, recipient_session TEXT NOT NULL,
-                    body TEXT NOT NULL, key TEXT NOT NULL, reply_to TEXT,
-                    created_at TEXT NOT NULL, acknowledged_at TEXT,
-                    UNIQUE(sender_profile, sender_session, key)
-                );
-                CREATE INDEX IF NOT EXISTS recipient_inbox ON messages
-                    (recipient_profile, recipient_session, acknowledged_at, seq);
-                CREATE TABLE IF NOT EXISTS notice_claims (
-                    message_id TEXT NOT NULL REFERENCES messages(id),
-                    channel TEXT NOT NULL, claimed_at TEXT NOT NULL,
-                    PRIMARY KEY(message_id, channel)
-                );
-                PRAGMA user_version=1;
-                COMMIT;
-            """)
+                raise RuntimeError("session-mailbox requires SQLite WAL")
+            db.executescript("BEGIN IMMEDIATE;" + self.SCHEMA + "PRAGMA user_version=1; COMMIT;")
 
     @contextmanager
     def _connection(self, write=False, timeout=3):
@@ -121,6 +117,32 @@ class Mailbox:
             raise
         finally:
             db.close()
+
+
+class Mailbox(_Store):
+    TABLES = frozenset({"messages", "notice_claims", "sqlite_sequence"})
+    SCHEMA = """
+        CREATE TABLE IF NOT EXISTS messages (
+            seq INTEGER PRIMARY KEY AUTOINCREMENT,
+            id TEXT NOT NULL UNIQUE,
+            sender_profile TEXT NOT NULL, sender_session TEXT NOT NULL,
+            recipient_profile TEXT NOT NULL, recipient_session TEXT NOT NULL,
+            body TEXT NOT NULL, key TEXT NOT NULL, reply_to TEXT,
+            created_at TEXT NOT NULL, acknowledged_at TEXT,
+            UNIQUE(sender_profile, sender_session, key)
+        );
+        CREATE INDEX IF NOT EXISTS recipient_inbox ON messages
+            (recipient_profile, recipient_session, acknowledged_at, seq);
+        CREATE TABLE IF NOT EXISTS notice_claims (
+            message_id TEXT NOT NULL REFERENCES messages(id),
+            channel TEXT NOT NULL, claimed_at TEXT NOT NULL,
+            PRIMARY KEY(message_id, channel)
+        );
+    """
+
+    def __init__(self, db_path, hermes_root):
+        db_path, self.hermes_root = store_paths(db_path, hermes_root)
+        self._open(db_path)
 
     def _profiles(self):
         homes = {"default": self.hermes_root}
@@ -160,10 +182,7 @@ class Mailbox:
             db.close()
 
     def _address(self, profile, session):
-        if not isinstance(profile, str) or not PROFILE_RE.fullmatch(profile):
-            raise ValueError("invalid exact profile name")
-        if not isinstance(session, str) or not SESSION_RE.fullmatch(session):
-            raise ValueError("invalid exact stored session ID")
+        check_address(profile, session)
         home = self._profiles().get(profile)
         if home is None:
             raise ValueError("unknown existing profile")
@@ -176,15 +195,18 @@ class Mailbox:
         raise ValueError("unknown stored session ID (must exist in registry or sessions metadata)")
 
     @staticmethod
-    def _message(row, include_body=True):
-        result = {key: row[key] for key in ("id", "sender_profile", "sender_session",
-                  "recipient_profile", "recipient_session", "reply_to", "created_at", "acknowledged_at")}
+    def _message(row, include_body=True, include_recipient=True):
+        keys = (("id", "sender_profile", "sender_session")
+                + (("recipient_profile", "recipient_session") if include_recipient else ())
+                + ("reply_to", "created_at", "acknowledged_at"))
+        result = {key: row[key] for key in keys}
         result["status"] = "acknowledged" if row["acknowledged_at"] else "queued"
         if include_body:
             result["body"] = row["body"]
         return result
 
     def send(self, sender_profile, sender_session, recipient_profile, recipient_session, body, key, reply_to=None):
+        """Store once; the receipt never echoes the body (read it through inbox)."""
         self._address(sender_profile, sender_session)
         self._address(recipient_profile, recipient_session)
         if not isinstance(body, str) or not body or len(body.encode("utf-8")) > MAX_REQUEST_BYTES:
@@ -205,7 +227,7 @@ class Mailbox:
                 if any(previous[field] != request[field] for field in
                        ("recipient_profile", "recipient_session", "body", "reply_to")):
                     raise ValueError("idempotency key conflict: recipient/body/reply_to differ")
-                return {**self._message(previous), "deduplicated": True}
+                return {**self._message(previous, False), "deduplicated": True}
             if reply_to is not None:
                 parent = db.execute("SELECT * FROM messages WHERE id=?", (reply_to,)).fetchone()
                 peers = {(sender_profile, sender_session), (recipient_profile, recipient_session)}
@@ -218,10 +240,11 @@ class Mailbox:
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (identifier, sender_profile, sender_session, recipient_profile, recipient_session,
                  body, key, reply_to, utc_now()))
-            return {**self._message(db.execute("SELECT * FROM messages WHERE id=?", (identifier,)).fetchone()),
+            return {**self._message(db.execute("SELECT * FROM messages WHERE id=?", (identifier,)).fetchone(), False),
                     "deduplicated": False}
 
     def inbox(self, profile, session, limit=20, after=None):
+        """Pending messages, oldest first: whole messages within INBOX_RESPONSE_BYTES of JSON."""
         self._address(profile, session)
         bounded_int(limit, "limit")
         with self._connection() as db:
@@ -235,9 +258,21 @@ class Mailbox:
                 seq = cursor["seq"]
             rows = db.execute("""SELECT * FROM messages WHERE recipient_profile=? AND recipient_session=?
                 AND acknowledged_at IS NULL AND seq>? ORDER BY seq LIMIT ?""", (profile, session, seq, limit + 1)).fetchall()
-        page = rows[:limit]
-        return {"messages": [self._message(row) for row in page], "has_more": len(rows) > limit,
-                "next_cursor": page[-1]["id"] if len(rows) > limit else None, "peer_content_untrusted": True}
+        result = {"recipient_profile": profile, "recipient_session": session, "messages": [],
+                  "has_more": False, "next_cursor": None, "peer_content_untrusted": True}
+        # Envelope upper bound: "false" and a quoted UUID are the longest has_more/cursor forms.
+        used = _json_bytes({**result, "next_cursor": "0" * 36})
+        for row in rows[:limit]:
+            message = self._message(row, include_recipient=False)
+            used += _json_bytes(message) + 2  # ", " list separator; over-counts the first
+            if used > INBOX_RESPONSE_BYTES:
+                if not result["messages"]:
+                    raise ValueError("stored message exceeds the inbox response byte budget")
+                break
+            result["messages"].append(message)
+        if len(result["messages"]) < len(rows):
+            result["has_more"], result["next_cursor"] = True, result["messages"][-1]["id"]
+        return result
 
     def ack(self, profile, session, message_ids):
         self._address(profile, session)
@@ -247,7 +282,8 @@ class Mailbox:
         with self._connection(write=True) as db:
             rows = []
             for identifier in identifiers:
-                row = db.execute("SELECT * FROM messages WHERE id=?", (identifier,)).fetchone()
+                row = db.execute("SELECT id, recipient_profile, recipient_session, acknowledged_at "
+                                 "FROM messages WHERE id=?", (identifier,)).fetchone()
                 if row is None or (row["recipient_profile"], row["recipient_session"]) != (profile, session):
                     raise ValueError("ACK requires an existing message for the supplied exact recipient")
                 rows.append(row)
@@ -255,8 +291,8 @@ class Mailbox:
             for row in rows:
                 db.execute("UPDATE messages SET acknowledged_at=COALESCE(acknowledged_at, ?) WHERE id=?",
                            (now, row["id"]))
-            receipts = [self._message(db.execute("SELECT * FROM messages WHERE id=?", (identifier,)).fetchone(), False)
-                        for identifier in identifiers]
+        receipts = [{"id": row["id"], "status": "acknowledged", "acknowledged_at": row["acknowledged_at"] or now}
+                    for row in rows]
         return {"messages": receipts, "acknowledged_count": len(receipts)}
 
     def status(self, message_id):
@@ -317,10 +353,9 @@ class Mailbox:
                 if not isinstance(identifier, str) or not SESSION_RE.fullmatch(identifier):
                     warnings.append({"profile": name, "source": "registry", "error": "invalid stored session ID skipped"})
                     continue
+                # `liveness` is the single activity hint; it never proves running, absent or idle.
                 sessions[(name, identifier)] = {
-                    "profile": name, "stored_session_id": identifier, "session": identifier,
-                    "active_hint": True, "verified_alive": None,
-                    "liveness": "unverified_registry_hint",
+                    "profile": name, "session": identifier, "liveness": "unverified_registry_hint",
                     "surface": str(entry.get("surface") or "unknown")[:64],
                     "last_active": entry.get("updated_at", entry.get("started_at")),
                 }
@@ -341,8 +376,7 @@ class Mailbox:
                         if not isinstance(identifier, str) or not SESSION_RE.fullmatch(identifier):
                             continue
                         item = sessions.setdefault((name, identifier), {
-                            "profile": name, "stored_session_id": identifier, "session": identifier,
-                            "active_hint": False, "verified_alive": None, "liveness": "not_in_registry",
+                            "profile": name, "session": identifier, "liveness": "not_in_registry",
                         })
                         for column, bound in (("title", 256), ("source", 64)):
                             if column in row.keys() and row[column] is not None:
@@ -366,6 +400,98 @@ class Mailbox:
         if not detailed:
             page = [{k: item[k] for k in ("profile", "session", "title") if k in item} for item in page]
         has_more = len(ordered) > offset + limit
+        grouped = {}
+        for warning in warnings:
+            key = (warning["profile"], warning["source"], warning["error"])
+            grouped.setdefault(key, {**warning, "count": 0})["count"] += 1
         return {"sessions": page, "has_more": has_more, "next_offset": offset + limit if has_more else None,
-                "warnings": warnings[:20], "warning_count": len(warnings),
+                "warnings": list(grouped.values())[:20], "warning_count": len(warnings),
+                "warning_group_count": len(grouped),
                 "recent_per_profile_limit": MAX_PAGE if include_recent else None}
+
+
+class WakeStore(_Store):
+    """Durable at-most-once automatic dispatch claims, separate from mailbox ACKs."""
+    TABLES = frozenset({"wakes"})
+    SCHEMA = """
+        CREATE TABLE IF NOT EXISTS wakes (
+            message_id TEXT PRIMARY KEY, recipient_profile TEXT NOT NULL,
+            recipient_session TEXT NOT NULL, state TEXT NOT NULL,
+            owner_key TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+            detail TEXT NOT NULL DEFAULT '', receipt TEXT
+        );
+        CREATE INDEX IF NOT EXISTS pending_recipient ON wakes
+            (recipient_profile, recipient_session, state, created_at);
+    """
+
+    def __init__(self, mailbox_db_path, hermes_root):
+        source, _root = store_paths(mailbox_db_path, hermes_root)
+        self._open(source.with_name(source.stem + ".wake" + source.suffix))
+
+    @staticmethod
+    def _result(row):
+        if row is None:
+            return None
+        value = dict(row)
+        value["receipt"] = json.loads(value["receipt"]) if value["receipt"] else None
+        return value
+
+    def request(self, message):
+        mid = message_uuid(message["id"])
+        profile, session = message["recipient_profile"], message["recipient_session"]
+        check_address(profile, session)
+        stamp = utc_now()
+        with self._connection(write=True) as db:
+            db.execute("INSERT OR IGNORE INTO wakes "
+                       "(message_id,recipient_profile,recipient_session,state,created_at,updated_at) "
+                       "VALUES (?,?,?,?,?,?)", (mid, profile, session,
+                       "acknowledged" if message.get("acknowledged_at") else "pending", stamp, stamp))
+            row = db.execute("SELECT * FROM wakes WHERE message_id=?", (mid,)).fetchone()
+            if (row["recipient_profile"], row["recipient_session"]) != (profile, session):
+                raise ValueError("immutable message recipient mismatch")
+            return self._result(row)
+
+    def pending(self, profile, session, limit=20):
+        check_address(profile, session)
+        bounded_int(limit, "limit")
+        with self._connection() as db:
+            return [self._result(row) for row in db.execute(
+                "SELECT * FROM wakes WHERE recipient_profile=? AND recipient_session=? AND state='pending' "
+                "ORDER BY created_at,message_id LIMIT ?", (profile, session, limit))]
+
+    def claim(self, mid, owner_key):
+        mid = message_uuid(mid)
+        if not isinstance(owner_key, str) or not 1 <= len(owner_key) <= 384:
+            raise ValueError("bounded owner identity required")
+        with self._connection(write=True) as db:
+            return db.execute("UPDATE wakes SET state='dispatching',owner_key=?,updated_at=? "
+                              "WHERE message_id=? AND state='pending'", (owner_key, utc_now(), mid)).rowcount == 1
+
+    def finish(self, mid, state, detail="", receipt=None):
+        mid = message_uuid(mid)
+        if state not in WAKE_STATES - {"pending", "dispatching"}:
+            raise ValueError("invalid final wake state")
+        if not isinstance(detail, str) or len(detail) > 512:
+            raise ValueError("bounded detail required")
+        if receipt is not None and not isinstance(receipt, dict):
+            raise ValueError("receipt must be an object or None")
+        encoded = json.dumps(receipt, ensure_ascii=False) if receipt is not None else None
+        if encoded is not None and len(encoded.encode("utf-8")) > 2048:
+            raise ValueError("receipt exceeds bound")
+        with self._connection(write=True) as db:
+            row = db.execute("SELECT * FROM wakes WHERE message_id=?", (mid,)).fetchone()
+            if row is None:
+                raise ValueError("unknown wake request")
+            expected = "pending" if state == "acknowledged" else "dispatching"
+            if row["state"] == state or (state == "acknowledged" and row["state"] != "pending"):
+                return self._result(row)
+            if row["state"] != expected:
+                raise ValueError("refusing wake state regression or unclaimed submission")
+            db.execute("UPDATE wakes SET state=?,detail=?,receipt=?,updated_at=? WHERE message_id=?",
+                       (state, detail, encoded, utc_now(), mid))
+            return self._result(db.execute("SELECT * FROM wakes WHERE message_id=?", (mid,)).fetchone())
+
+    def status(self, mid):
+        mid = message_uuid(mid)
+        with self._connection() as db:
+            return self._result(db.execute("SELECT * FROM wakes WHERE message_id=?", (mid,)).fetchone())

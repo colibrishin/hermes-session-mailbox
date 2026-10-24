@@ -21,6 +21,10 @@ spec = importlib.util.spec_from_file_location('mailbox_native_receiver_test', RE
 assert spec is not None and spec.loader is not None
 wake = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(wake)
+spec = importlib.util.spec_from_file_location('mailbox_native_store_test', REPO / 'mailbox_store.py')
+assert spec is not None and spec.loader is not None
+store = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(store)
 from hermes_cli.plugins import PluginContext
 
 
@@ -68,6 +72,12 @@ class NativeGatewayTests(unittest.TestCase):
                                       side_effect=lambda *a, **kw: self.pending))
         self.receiver: Any = None
 
+    def stores(self):
+        return store.Mailbox(self.db, self.home), store.WakeStore(self.db, self.home)
+
+    def start_receiver(self):
+        return wake.start_receiver(self.home, 'default', self.stores, ctx=self.ctx)
+
     def shutdown(self):
         if self.receiver:
             self.receiver.stop()
@@ -76,7 +86,7 @@ class NativeGatewayTests(unittest.TestCase):
         self.loop.close()
 
     def start(self):
-        self.receiver = wake.GatewayReceiver(self.ctx, self.home, self.home, self.db)
+        self.receiver = wake.GatewayReceiver(self.ctx, self.home, 'default', self.stores)
         return self.receiver
 
     def message(self, session='recipient', key='one'):
@@ -139,7 +149,7 @@ class NativeGatewayTests(unittest.TestCase):
         row = self.message()
         server = SimpleNamespace(_methods={'prompt.submit': Mock()})
         with patch.dict(sys.modules, {'tui_gateway.server': server}):
-            dispose = wake.start_receiver(self.home, self.home, self.db, ctx=self.ctx)
+            dispose = self.start_receiver()
             self.assertIsNotNone(dispose)
             self.addCleanup(dispose)
             selected = wake._MONITORS[str(self.home.resolve())]
@@ -153,7 +163,7 @@ class NativeGatewayTests(unittest.TestCase):
     def test_denied_native_permission_does_not_start(self):
         self.ctx._gateway_injection_allowed = lambda: False
         with patch.dict(sys.modules, {'tui_gateway.server': None}):
-            self.assertIsNone(wake.start_receiver(self.home, self.home, self.db, ctx=self.ctx))
+            self.assertIsNone(self.start_receiver())
         self.assertFalse(self.db.exists())
 
     def test_wrong_profile_and_retiring_owner_defer(self):
@@ -188,9 +198,9 @@ class NativeGatewayTests(unittest.TestCase):
 
     def test_start_and_unload_without_tui_module(self):
         with patch.dict(sys.modules, {'tui_gateway.server': None}):
-            dispose = wake.start_receiver(self.home, self.home, self.db, ctx=self.ctx)
+            dispose = self.start_receiver()
             self.assertIsNotNone(dispose)
-            self.assertIsNone(wake.start_receiver(self.home, self.home, self.db, ctx=self.ctx))
+            self.assertIsNone(self.start_receiver())
             receiver = wake._MONITORS[str(self.home.resolve())]
             dispose()
             self.assertFalse(receiver.thread.is_alive())
@@ -200,7 +210,7 @@ class NativeGatewayTests(unittest.TestCase):
         self.manager.has_gateway_message_injector = False
         self.manager._gateway_message_injector = None
         with patch.dict(sys.modules, {'tui_gateway.server': None}):
-            dispose = wake.start_receiver(self.home, self.home, self.db, ctx=self.ctx)
+            dispose = self.start_receiver()
             self.assertIsNotNone(dispose)
             self.addCleanup(dispose)
             self.assertFalse(self.db.exists())

@@ -10,7 +10,7 @@ on:
   pull_request:
     paths-ignore: ['README.md', 'LICENSE']
   schedule:
-    - cron: '23 4 * * 1'  # weekly, Monday 04:23 UTC: latest only
+    - cron: '23 4 * * 1'  # weekly, Monday 04:23 UTC: native-desktop and latest
   workflow_dispatch:
 
 permissions:
@@ -59,8 +59,8 @@ jobs:
           persist-credentials: false
       - uses: ./plugin/.github/actions/hermes-interface
         with:
-          # Installed canonical-core revision; newer main currently has an
-          # unsatisfiable pip dependency set, before any plugin tests can run.
+          # Verified installable canonical-core revision from the native-wake fix.
+          # Keep this blocking pin separate from advisory main dependency drift.
           hermes-ref: 4d04303818b61bf3aa09278af48356315515965b
           test-script: plugin/tests/native_gateway.py
 
@@ -79,5 +79,6 @@ jobs:
         with:
           hermes-ref: main
       - name: Native Desktop wake regressions
+        if: ${{ !cancelled() && env.HERMES_TEST_PYTHON != '' }}
         shell: bash
         run: '"$HERMES_TEST_PYTHON" plugin/tests/native_gateway.py'

@@ -47,11 +47,20 @@ runs:
         version=$("$py" -c "import hermes_cli; print(hermes_cli.__release_date__)")
         echo "Hermes Agent $HERMES_REF -> \`$sha\` (release date $version)" >> "$GITHUB_STEP_SUMMARY"
 
+    - name: Run standalone regressions
+      shell: bash
+      run: |
+        # Run every suite even after a failure; the step still fails if any did.
+        status=0
+        for test in reload_regression session_listing public_responses; do
+          "$HERMES_TEST_PYTHON" "plugin/tests/$test.py" || status=1
+        done
+        exit $status
+
     - name: Run interface tests
+      if: ${{ !cancelled() && env.HERMES_TEST_PYTHON != '' }}
       shell: bash
       env:
         TEST_SCRIPT: ${{ inputs.test-script }}
       run: |
-        "$HERMES_TEST_PYTHON" plugin/tests/reload_regression.py
-        "$HERMES_TEST_PYTHON" plugin/tests/session_listing.py
         "$HERMES_TEST_PYTHON" "$TEST_SCRIPT"

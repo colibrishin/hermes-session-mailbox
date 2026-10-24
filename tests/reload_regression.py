@@ -53,5 +53,49 @@ class ReloadTests(unittest.TestCase):
                         sys.modules.pop(name, None)
 
 
+    def test_store_upgrade_same_size_and_timestamp(self):
+        # The plugin owns the only loader; the receiver gets stores injected.
+        plugin = load_plugin()
+        prefix = '_hermes_mailbox_'
+        with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as tmp:
+            root = Path(tmp).resolve()
+            source = root / 'mailbox_store.py'
+            source.write_text('def version(): return "old"\n', encoding='utf-8')
+            stamp = source.stat()
+            try:
+                old = plugin._local_module(root, 'mailbox_store', prefix)
+                self.assertEqual(old.version(), 'old')
+                source.write_text('def version(): return "new"\n', encoding='utf-8')
+                os.utime(source, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
+                self.assertEqual(source.stat().st_size, stamp.st_size)
+                current = plugin._local_module(root, 'mailbox_store', prefix)
+                self.assertEqual(current.version(), 'new')
+                self.assertIsNot(current, old)
+                self.assertIs(current, plugin._local_module(root, 'mailbox_store', prefix))
+                self.assertEqual(old.version(), 'old')
+            finally:
+                for key, module in list(sys.modules.items()):
+                    if getattr(module, '__file__', None) == str(source):
+                        sys.modules.pop(key, None)
+
+    def test_failed_import_retries_identical_bytes(self):
+        from unittest.mock import patch
+        plugin = load_plugin()
+        with tempfile.TemporaryDirectory(dir=os.environ.get('TMPDIR')) as tmp:
+            root = Path(tmp).resolve()
+            source = root / 'mailbox_store.py'
+            source.write_text('import os\nif os.environ.get("MAILBOX_TEST_IMPORT_FAIL"): raise RuntimeError("fixture failure")\nready = True\n', encoding='utf-8')
+            with patch.dict(os.environ, {'MAILBOX_TEST_IMPORT_FAIL': 'yes'}):
+                with self.assertRaisesRegex(RuntimeError, 'fixture failure'):
+                    plugin._local_module(root, 'mailbox_store', '_hermes_mailbox_')
+            self.assertFalse(any(getattr(m, '__file__', None) == str(source) for m in sys.modules.values()))
+            current = plugin._local_module(root, 'mailbox_store', '_hermes_mailbox_')
+            self.assertTrue(current.ready)
+            self.assertIs(current, plugin._local_module(root, 'mailbox_store', '_hermes_mailbox_'))
+            for key, module in list(sys.modules.items()):
+                if getattr(module, '__file__', None) == str(source):
+                    sys.modules.pop(key, None)
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)

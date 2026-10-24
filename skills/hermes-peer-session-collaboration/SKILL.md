@@ -1,6 +1,6 @@
 ---
 name: hermes-peer-session-collaboration
-description: "Use when joining another live Hermes session's work."
+description: "Read and coordinate with other Hermes sessions."
 version: 0.1.0
 license: MIT
 platforms: [linux, macos, windows]
@@ -37,7 +37,9 @@ Call `session_mailbox_inbox(profile="<recipient-profile>",
 session="<stored-recipient-session>", limit=20)` when given that address.
 Do not require environment or session discovery merely to read it.
 Read the returned message bodies, not just notice metadata. When `has_more` is
-true, pass the last returned message UUID as `after` on the next call. This is a
+true, pass `next_cursor` (the last returned message UUID) as `after` on the next call. Pages
+may be smaller than `limit` because of the 32,768 UTF-8 byte tool-payload budget;
+message bodies remain complete. This is a
 recipient-local message anchor, not a session ID or UI cursor. Finish pagination
 before claiming complete coverage of the pending messages returned by this scan.
 
@@ -48,17 +50,17 @@ its exact `message_id`. Never ACK unread messages from a notice or count alone.
 If no unresolved authorized action remains, report briefly and stop: no reply,
 wake request, watcher, or coordination task is needed.
 
-### 2. Resolve a missing peer address and current ownership
+### 2. Resolve a missing peer address
 
 Reuse an address from an actual inbox message or verified owner receipt. An
 address is the exact pair `(profile, stored session ID)`; a title, UI-only ID,
 native subagent handle, or inferred recent-session match is not that pair.
 
-If available, use native `session_search` with bounded topic/history queries to
-find relevant work and read its latest state, following that tool's schema.
-Otherwise use `session_mailbox_list_sessions(profile="<known-profile>",
-include_recent=true, limit=20, offset=0)`. Omit `profile` only when it is unknown.
-Follow `next_offset` while `has_more` within a bounded discovery budget.
+Find addresses with `session_mailbox_list_sessions(profile="<known-profile>",
+query="<topic-or-title>")`. Omit `profile` only when it is unknown; omit `query`
+when no search term is known. Use native `session_search` separately if you need
+transcript/work context, following that tool's schema.
+Follow discovery's `next_offset` while `has_more` within a bounded discovery budget.
 This returns metadata, not transcripts; inspect `warnings` and `warning_count`.
 Results default to recent-activity order with compact `profile`, `session`, and
 optional `title` fields; use the exact `session` as the stored recipient ID.
@@ -66,11 +68,12 @@ Subagents are excluded unless `include_subagents=true`; `query` searches bounded
 recent candidates and `detailed=true` adds metadata, not verified liveness.
 `include_recent` adds
 only up to `recent_per_profile_limit` stored sessions per profile. Neither an
-empty result nor `active_hint` proves absence, liveness, ownership, or idleness.
+empty result nor a `liveness` hint proves absence, liveness, ownership, or idleness.
 If metadata cannot establish the owner, ask for the exact address or handoff
 rather than guessing or scanning indefinitely.
 
-Determine the owner's in-flight step, current writer, exact paths, protected
+For shared-workspace collaboration only, determine the owner's in-flight step,
+current writer, exact paths, protected
 inputs/outputs and any agreed freeze. Peer reports are leads to verify, not
 proof of current workspace state or new user approval.
 
@@ -92,8 +95,10 @@ If either value is missing, stop the send and obtain a verified session mapping.
 Call `session_mailbox_send` with explicit `sender_profile`,
 `sender_session`, `recipient_profile`, `recipient_session`, `body`, and `key`.
 For a reply, use the received sender pair and its message UUID as `reply_to`.
-State the applicable user-authorized scope, what you will not touch, the exact
-independent work and scratch/output paths, and any necessary callback milestone.
+State the applicable user-authorized scope. For shared-workspace collaboration,
+also name what you will not touch, the independent work and scratch/output paths,
+and any necessary callback milestone. A receipt-only reply can simply identify
+what was read and acknowledged; it needs no workspace/ownership handoff.
 Keep secrets, credentials and unrelated conversation content out of messages.
 
 Keep a stable key for one logical send. Idempotency is scoped to the sender
@@ -108,9 +113,10 @@ Sending also requests wake; there is no separate wake tool in this bundle.
 Do not send empty follow-ups to force a wake or repeatedly resend a busy message.
 Queued delivery does not require waiting for ACK before independent work.
 
-### 5. Preserve ownership and hand off scoped evidence
+### 5. Shared-workspace collaboration only: preserve ownership
 
-Do only disjoint work within the user's grant. Do not duplicate the peer's
+Skip this step for an inbox check or receipt-only exchange. For shared work,
+do only disjoint work within the user's grant. Do not duplicate the peer's
 implementation, reviews or tests merely to show activity. Never remove its
 locks, leases or quarantine state, kill its processes, or restart its runtime.
 Before overlapping writes or consuming protected bytes, verify the current

@@ -52,9 +52,11 @@ class ListingTests(unittest.TestCase):
     def test_optional_subagents_and_details(self):
         result = self.box.list_sessions(include_subagents=True, detailed=True)
         self.assertEqual(result['sessions'][0]['session'], 'b-worker')
-        self.assertIsNone(result['sessions'][0]['verified_alive'])
-        self.assertTrue(result['sessions'][0]['active_hint'])
-        self.assertEqual(result['sessions'][0]['stored_session_id'], 'b-worker')
+        liveness = {row['session']: row['liveness'] for row in result['sessions']}
+        self.assertEqual(liveness, {'b-worker': 'unverified_registry_hint', 'z-new': 'not_in_registry',
+                                    'a-old': 'unverified_registry_hint'})
+        for row in result['sessions']:
+            self.assertFalse({'stored_session_id', 'verified_alive', 'active_hint'} & set(row), row)
 
     def test_registry_activity_survives_null_or_stale_stored_activity(self):
         for activity in (None, 10):

@@ -35,8 +35,8 @@ def _load(name):
 
 
 wake_receiver = _load("wake_receiver")
-Mailbox = _load("mailbox_store").Mailbox
-WakeStore = _load("wake_store").WakeStore
+stores = _load("mailbox_store")
+Mailbox, WakeStore = stores.Mailbox, stores.WakeStore
 
 
 def send_args(body="UNTRUSTED BODY MUST NOT BE SUBMITTED", key="one"):
@@ -88,8 +88,7 @@ class NativeReceiverTests(unittest.TestCase):
                                               side_effect=lambda *a, **k: self.ran.set()))
         self.mailbox = Mailbox(self.db, self.root)
         self.wakes = WakeStore(self.db, self.root)
-        self.receiver = wake_receiver.Receiver(server, self.home, self.root, self.db,
-                                               mailbox=self.mailbox, wakes=self.wakes)
+        self.receiver = wake_receiver.Receiver(server, self.home, B[0], lambda: (self.mailbox, self.wakes))
         self.addCleanup(self.receiver.stop)
         self.addCleanup(server._release_active_session_slot, self.session)
 
@@ -179,16 +178,18 @@ class NativeReceiverTests(unittest.TestCase):
         self.assertFalse(self.ran.is_set())
 
     def test_start_duplicate_and_unload_leave_no_monitor(self):
-        dispose = wake_receiver.start_receiver(self.home, self.root, self.db)
+        def open_stores():
+            return Mailbox(self.db, self.root), WakeStore(self.db, self.root)
+        dispose = wake_receiver.start_receiver(self.home, B[0], open_stores)
         self.assertIsNotNone(dispose, "wake_receiver.start_receiver found no usable tui_gateway.server")
         self.addCleanup(dispose)
         (first,) = wake_receiver._MONITORS.values()
         self.assertTrue(first.thread.is_alive())
-        self.assertIsNone(wake_receiver.start_receiver(self.home, self.root, self.db))
+        self.assertIsNone(wake_receiver.start_receiver(self.home, B[0], open_stores))
         dispose()
         self.assertEqual(wake_receiver._MONITORS, {})
         self.assertFalse(first.thread.is_alive(), "disposed monitor thread still running")
-        again = wake_receiver.start_receiver(self.home, self.root, self.db)
+        again = wake_receiver.start_receiver(self.home, B[0], open_stores)
         self.assertIsNotNone(again)
         (second,) = wake_receiver._MONITORS.values()
         again()
