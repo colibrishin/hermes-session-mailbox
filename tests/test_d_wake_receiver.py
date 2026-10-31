@@ -177,6 +177,17 @@ class NativeReceiverTests(unittest.TestCase):
         self.assertEqual(state["state"], "queued", f"prompt.submit queued path changed: {state}")
         self.assertFalse(self.ran.is_set())
 
+    def test_cold_start_gateway_receiver_without_gateway_host_wakes_tui_session(self):
+        # A Desktop dashboard loads plugins before tui_gateway.server and never publishes a
+        # messaging-gateway host, so the receiver chosen at plugin load is the native one.
+        row = self.message("dashboard")
+        ctx = SimpleNamespace(_manager=SimpleNamespace(_gateway_message_injector=None))
+        receiver = wake_receiver.GatewayReceiver(ctx, self.home, B[0], lambda: (self.mailbox, self.wakes))
+        receiver.tick()
+        self.assertTrue(self.ran.wait(10), ("cold-start receiver never reached tui_gateway prompt.submit",
+                                            self.wakes.status(row["id"])))
+        self.assertEqual(self.wakes.status(row["id"])["state"], "submitted")
+
     def test_start_duplicate_and_unload_leave_no_monitor(self):
         def open_stores():
             return Mailbox(self.db, self.root), WakeStore(self.db, self.root)

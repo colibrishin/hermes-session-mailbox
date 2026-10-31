@@ -126,6 +126,22 @@ class NativeLoadTests(unittest.TestCase):
         self.assertIn(sent["id"], parsed.get("_session_mailbox_notice", ""),
                       "model_tools._apply_transform_tool_result_hook did not apply transform_tool_result")
 
+    def test_6a_background_review_fork_leaves_notice_for_live_turn(self):
+        from model_tools import _apply_transform_tool_result_hook, _CallIds
+        from tools.skill_provenance import BACKGROUND_REVIEW, reset_current_write_origin, set_current_write_origin
+        sent = self.send("ci-review-fork")
+        ids = _CallIds(task_id="ci-task", session_id=s.SID_DEFAULT, tool_call_id="ci-call", turn_id="ci-turn",
+                       api_request_id="ci-request")
+        token = set_current_write_origin(BACKGROUND_REVIEW)
+        try:
+            forked = json.loads(_apply_transform_tool_result_hook("skill_view", {}, '{"ok":true}', 1, ids))
+        finally:
+            reset_current_write_origin(token)
+        self.assertNotIn("_session_mailbox_notice", forked, "a background review fork (same session_id, "
+                         "tools.skill_provenance origin) must not claim the live turn's notice")
+        live = json.loads(_apply_transform_tool_result_hook("terminal", {"command": "true"}, '{"ok":true}', 1, ids))
+        self.assertIn(sent["id"], live.get("_session_mailbox_notice", ""))
+
     def test_7_on_session_start_starts_receiver(self):
         # A failure, not a skip: a skipped test would let CI pass without checking on_session_start.
         self.assertFalse(self.tui_preloaded, f"{TUI_MODULE} was already imported before the plugin loaded, so this "

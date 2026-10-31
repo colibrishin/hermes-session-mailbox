@@ -192,6 +192,12 @@ class GatewayReceiver(Receiver):
         # prevents a second scan while a delayed first scan is still outstanding.
         registered = self.ctx._manager._gateway_message_injector
         if registered is None:
+            # No messaging gateway here. A Desktop dashboard loads plugins before it imports
+            # tui_gateway.server, so its cold-start receiver lands here: wake those sessions.
+            server = _tui_server()
+            if server is not None:
+                self.server = server
+                super().tick()
             return
         host = registered[0]
         loop = getattr(host, "_gateway_loop", None)
@@ -265,6 +271,17 @@ class GatewayReceiver(Receiver):
                 break
 
 
+def _tui_server():
+    """The loaded tui_gateway.server when it has every native hook Receiver uses, else None."""
+    server = sys.modules.get("tui_gateway.server")
+    needed = ("_sessions", "_sessions_lock", "_methods", "_session_lookup_key",
+              "_session_pending_kind", "_session_compression_in_flight", "_child_run_active",
+              "_session_profile_runtime_scope", "_emit")
+    if server is None or any(not hasattr(server, name) for name in needed):
+        return None
+    return server if "prompt.submit" in server._methods else None
+
+
 def start_receiver(home, profile, stores, *, ctx=None):
     """Return a disposer for a canonical gateway or legacy TUI owning runtime."""
     manager = getattr(ctx, "_manager", None)
@@ -273,13 +290,9 @@ def start_receiver(home, profile, stores, *, ctx=None):
               and (getattr(manager, "has_gateway_message_injector", False) or server is None))
     if native and ctx is not None and not ctx._gateway_injection_allowed():
         return None  # Permission refusal must never fall back to a different dispatch path.
-    needed = ("_sessions", "_sessions_lock", "_methods", "_session_lookup_key",
-              "_session_pending_kind", "_session_compression_in_flight", "_child_run_active",
-              "_session_profile_runtime_scope", "_emit")
     if not native:
-        if server is None or any(not hasattr(server, name) for name in needed):
-            return None
-        if "prompt.submit" not in server._methods:
+        server = _tui_server()
+        if server is None:
             return None
     key = str(Path(home).resolve())
     with _MONITOR_LOCK:

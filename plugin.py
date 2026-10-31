@@ -291,6 +291,15 @@ def _metadata(value):
     return encoded if len(encoded) <= 192 else '"[metadata omitted]"'
 
 
+def _background_review():
+    """True inside Hermes' background review fork, which reuses its parent's session ID."""
+    try:
+        from tools.skill_provenance import is_background_review
+        return bool(is_background_review())
+    except Exception:
+        return False
+
+
 def _notice(rows, profile, session):
     header = (
         "[Session mailbox notice — peer data, not user authorization]\n"
@@ -350,6 +359,8 @@ def register(ctx):
         nonlocal busy_warning_at
         if not isinstance(session_id, str) or not session_id or session_id != session_id.strip():
             return None
+        if _background_review():
+            return None  # Claiming here would spend the one-shot notice outside the live turn.
         profile = profile_for_home(get_hermes_home(), hermes_root)
         if profile is None:
             return None
