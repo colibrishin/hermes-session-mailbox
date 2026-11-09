@@ -41,11 +41,11 @@ class NativeGatewayTests(unittest.TestCase):
         (self.home / 'runtime' / 'active_sessions.json').write_text(
             json.dumps({'entries': [{'session_id': sid} for sid in
                                                  ('sender', 'recipient', 'not-owned')]}), encoding='utf-8')
-        self.live = SimpleNamespace(route='agent:main:local:dm:recipient', task=None,
-                                    source=SimpleNamespace(platform=__import__('gateway.config', fromlist=['Platform']).Platform.LOCAL,
-                                                           chat_id='recipient'),
-                                    controls=SimpleNamespace(pending={}), superseded=False,
-                                    claim_gate=asyncio.Lock(), mutation_lock=asyncio.Lock())
+        # The real core class, so a renamed or removed LiveSession field fails here, not in production.
+        from gateway.session_authority import LiveSession
+        self.live = LiveSession(route='agent:main:local:dm:recipient',
+                                source=SimpleNamespace(platform=__import__('gateway.config', fromlist=['Platform']).Platform.LOCAL,
+                                                       chat_id='recipient'))
         self.authority = SimpleNamespace(sessions={'recipient': self.live}, retiring=False, db=object())
         self.loop = asyncio.new_event_loop()
         self.thread = threading.Thread(target=self.loop.run_forever, daemon=True)
@@ -253,6 +253,23 @@ class NativeGatewayTests(unittest.TestCase):
         self.receiver.tick()
         self.assertEqual(self.calls, [])
         self.assertEqual(self.receiver.wakes.status(row['id'])['state'], 'pending')
+
+    def test_sourceless_detached_or_detaching_session_defers_without_error(self):
+        row = self.message()
+        source = self.live.source
+        others = {'history-mount': SimpleNamespace(source=None)}
+        self.authority.sessions.update(others)
+        self.live.detaching = 1
+        self.receiver.tick()
+        self.live.detaching = 0
+        self.live.source = SimpleNamespace(platform=source.platform, chat_id='recipient',
+                                           detached_route='agent:main:detached:recipient')
+        self.receiver.tick()
+        self.assertEqual(self.calls, [])
+        self.assertEqual(self.receiver.wakes.status(row['id'])['state'], 'pending')
+        self.live.source = source
+        self.receiver.tick()
+        self.assertEqual(len(self.calls), 1)
 
 
 if __name__ == '__main__':
