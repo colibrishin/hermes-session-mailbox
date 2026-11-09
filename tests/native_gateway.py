@@ -262,12 +262,18 @@ class NativeGatewayTests(unittest.TestCase):
         self.live.detaching = 1
         self.receiver.tick()
         self.live.detaching = 0
-        self.live.source = SimpleNamespace(platform=source.platform, chat_id='recipient',
-                                           detached_route='agent:main:detached:recipient')
+        # The moved-past marker of whichever core is installed: ``detached`` or older ``superseded``.
+        if hasattr(type(self.live), 'detached'):
+            self.live.source = SimpleNamespace(platform=source.platform, chat_id='recipient',
+                                               detached_route='agent:main:detached:recipient')
+        else:
+            self.live.superseded = True
         self.receiver.tick()
         self.assertEqual(self.calls, [])
         self.assertEqual(self.receiver.wakes.status(row['id'])['state'], 'pending')
         self.live.source = source
+        if not hasattr(type(self.live), 'detached'):
+            self.live.superseded = False
         self.receiver.tick()
         self.assertEqual(len(self.calls), 1)
 

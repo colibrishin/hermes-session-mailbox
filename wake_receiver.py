@@ -238,10 +238,12 @@ class GatewayReceiver(Receiver):
                 return
             # Only canonical local routes have a stable FIFO owner across /new
             # and compression. Messaging lane keys can rotate to another recipient.
-            # History mounts carry no source; detached conversations belong to a chat that moved on.
+            # History mounts carry no source; a conversation its chat moved past is ``superseded``
+            # in older cores and ``detached``/``detaching`` in newer ones.
             source = live.source
             if (source is None or source.platform != Platform.LOCAL or source.chat_id != stored_id
-                    or live.detached or live.detaching):
+                    or getattr(live, 'superseded', False) or getattr(live, 'detached', False)
+                    or getattr(live, 'detaching', 0)):
                 continue
             if ((live.task is not None and not live.task.done())
                     or live.controls.pending or live.claim_gate.locked()
